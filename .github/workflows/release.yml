@@ -2,12 +2,19 @@ name: Build and release
 
 # Every push to main: build the exe and keep it as a workflow artifact (to test the build).
 # Every tag like v0.1.0: build the exe and publish it on the Releases page, with a SHA256 file.
+# Manual run (Actions tab, "Run workflow"): type a version like v0.1.0 to build, create that tag and publish the release.
 on:
   push:
     branches:
       - main
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to publish, for example v0.1.0. Leave empty to only build."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -32,7 +39,7 @@ jobs:
           Get-Content csharp\ff14-key2key.exe.sha256
 
       - name: Keep the build as an artifact
-        if: github.ref_type != 'tag'
+        if: github.ref_type != 'tag' && inputs.version == ''
         uses: actions/upload-artifact@v4
         with:
           name: ff14-key2key
@@ -41,12 +48,16 @@ jobs:
             csharp/ff14-key2key.exe.sha256
 
       - name: Publish the release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || inputs.version != ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.version || github.ref_name }}
         run: |
+          case "$TAG" in
+            v*) ;;
+            *) echo "The version must start with v, for example v0.1.0"; exit 1 ;;
+          esac
           cat > release-notes.md <<'EOF'
           Built by GitHub Actions from the source code of this tag. The build log is public.
           The file has no digital signature, so Windows may show a warning. The program asks for administrator rights.
@@ -57,4 +68,4 @@ jobs:
           檔案沒有數位簽章，Windows 可能顯示警告；程式會要求系統管理員權限。
           檢查方式：用 certutil -hashfile ff14-key2key.exe SHA256 算出的值，和 ff14-key2key.exe.sha256 裡的數字比對。
           EOF
-          gh release create "$TAG" csharp/ff14-key2key.exe csharp/ff14-key2key.exe.sha256 --title "$TAG" --notes-file release-notes.md
+          gh release create "$TAG" csharp/ff14-key2key.exe csharp/ff14-key2key.exe.sha256 --target "$GITHUB_SHA" --title "$TAG" --notes-file release-notes.md
