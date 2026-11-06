@@ -140,7 +140,19 @@ The calibration makes this file. It is next to `ff14-key2key.exe`. Most people d
 base_note=48   # MIDI note number of the far left key (C3 = 48)
 device=        # Part of the MIDI device name. Empty = choose automatically
 channel=0      # 0 = all channels
+chord_spread_ms=0   # Chord spread in milliseconds. 0 = off, 10 to 200 = on
 ```
+
+### Chord spread
+
+FF14 performance mode plays only one note at a time. When you press several keys together, the game usually plays only one of them, and which one is not fixed.
+Turn on "chord spread" (window version: tick "和弦錯開" in the main window; console version: set `chord_spread_ms` in `config.txt`):
+
+- Notes you press together are sent **from low to high**, one after another, with the set number of milliseconds between them. It sounds like a fast broken chord. The last note, which keeps sounding, is the highest one (usually the melody).
+- Only notes you pressed are spread. The program never makes or repeats a note by itself. A note you let go before it is sent is cancelled.
+- When it is on, each note is about 8 ms later (to see which notes were pressed together). Later notes of a chord come later.
+- Start with 30 ms. If notes are still lost, use a larger number. In the window version you can change it while mapping, and it works at once.
+- This does not make the game play a real chord. It only gives each note a chance to be heard. Decide yourself whether this fits the rules of the game.
 
 ## Troubleshooting
 
@@ -150,6 +162,7 @@ channel=0      # 0 = all channels
 - **The program says "超出範圍" (out of range) when you press a key.** The Octave or Transpose button on the keyboard was changed. Set it back to the setting you used in the calibration, or calibrate again (option 2). If your keyboard has a "smart scale" function, turn it off.
 - **The test scale is right, but your playing has wrong notes.** Calibrate again.
 - **Zhuyin symbols appear when you press keys.** Change your input method to English mode.
+- **You press several keys together, but the game plays only one.** This is a limit of FF14 (one note at a time). The program is not broken. You can turn on "Chord spread" (see above). This is also why you usually hear only one note in the "C major chord" at the end of the test scale.
 - **No sound after you click Pause.** This is normal. While paused, no keys go to the game. Click Resume.
 - **You cannot find the program window.** It may be in the system tray. Double-click the piano icon in the notification area (bottom right). Or start `ff14-key2key-gui.exe` again: the window that is already open comes to the front.
 - **The build fails.** Check that `Key2Key.cs`, `Gui.cs`, `app.manifest`, `app.gui.manifest` and `build.bat` are all in the `csharp\` folder. Paste the screen in an Issue. If it says an exe is still running, close it first (also check the system tray).

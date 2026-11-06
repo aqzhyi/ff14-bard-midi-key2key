@@ -142,6 +142,7 @@ namespace Ff14Key2Key
 
         private Mode mode = Mode.Idle;
         private Engine engine;          // mapping
+        private ChordSpreader spreader; // mapping
         private MidiIn midi;            // mapping
         private MidiIn monitorMidi;     // monitor
         private Thread testThread;      // test
@@ -177,6 +178,9 @@ namespace Ff14Key2Key
         private Button testButton;
         private Button monitorButton;
         private Button keymapButton;
+        private CheckBox spreadCheck;
+        private NumericUpDown spreadValue;
+        private bool loadingSpread;
         private KeyboardView keyboard;
         private TextBox logBox;
         private Button clearButton;
@@ -374,6 +378,28 @@ namespace Ff14Key2Key
             pauseButton.MinimumSize = new Size(S(150), S(40));
             AddRow(root, MakeFlow(runButton, pauseButton), SizeType.AutoSize);
 
+            // Chord spread (FF14 plays one note at a time)
+            spreadCheck = new CheckBox();
+            spreadCheck.Text = "和弦錯開";
+            spreadCheck.AutoSize = true;
+            spreadCheck.Margin = new Padding(S(6), S(6), 0, S(3));
+            spreadCheck.CheckedChanged += OnSpreadChanged;
+            spreadValue = new NumericUpDown();
+            spreadValue.Minimum = 10;
+            spreadValue.Maximum = ChordSpreader.MaxSpreadMs;
+            spreadValue.Increment = 5;
+            spreadValue.Value = 30;
+            spreadValue.Width = S(64);
+            spreadValue.Margin = new Padding(S(3), S(3), 0, S(3));
+            spreadValue.Enabled = false;
+            spreadValue.ValueChanged += OnSpreadChanged;
+            Label spreadUnit = MakeCaption("毫秒");
+            spreadUnit.Margin = new Padding(S(2), S(6), S(10), S(3));
+            Label spreadHint = MakeCaption("FF14 一次只能發一個音。開啟後，同時按下的音會由低到高錯開送出，最後持續的是最高音。");
+            spreadHint.ForeColor = SystemColors.GrayText;
+            spreadHint.Margin = new Padding(S(3), S(6), S(3), S(3));
+            AddRow(root, MakeFlow(spreadCheck, spreadValue, spreadUnit, spreadHint), SizeType.AutoSize);
+
             // Other tools
             calibrateButton = MakeButton("校準最低音", OnCalibrateClick);
             testButton = MakeButton("測試音階", OnTestClick);
@@ -485,6 +511,7 @@ namespace Ff14Key2Key
             AddLog("程式已啟動。");
             RefreshDevices();
             RefreshConfigText();
+            LoadSpreadSetting();
             SetLinked(sink.Poll(), true);
             UpdateUi();
             timer.Start();
@@ -761,11 +788,12 @@ namespace Ff14Key2Key
             int baseNote = cfg.BaseNote;
             int channel = cfg.Channel;
             Engine eng = new Engine(sink, baseNote, channel);
+            ChordSpreader spr = new ChordSpreader(eng, CurrentSpreadMs());
             // Runs on the MIDI thread: only the engine here, never the UI.
             MidiShortHandler handler = delegate(uint raw)
             {
                 MidiMessage msg = MidiMessage.Parse(raw);
-                eng.Handle(msg);   // keys first, the lamp after
+                spr.Handle(msg);   // keys first, the lamp after
                 LampForMessage(msg, baseNote, channel, eng);
             };
             MidiIn m;
@@ -776,18 +804,21 @@ namespace Ff14Key2Key
             catch (MidiException ex)
             {
                 eng.Shutdown();
+                spr.Stop();
                 AddLog(ex.Message);
                 ShowWarning(ex.Message);
                 return;
             }
 
             engine = eng;
+            spreader = spr;
             midi = m;
             liveEngine = eng;
             mode = Mode.Mapping;
             AddLog("開始映射：" + dev.Name);
             AddLog(string.Format("  最低音 MIDI {0} ({1})，頻道：{2}，有效音域 MIDI {0} ({1}) ~ {3} ({4})",
                 baseNote, Keymap.NoteName(baseNote), ChannelText(channel), baseNote + 36, Keymap.NoteName(baseNote + 36)));
+            AddLog("  和弦錯開：" + (CurrentSpreadMs() > 0 ? CurrentSpreadMs().ToString() + " 毫秒" : "關閉"));
             AddLog("  按鍵會直接送到 FF14 視窗，不管目前是哪個視窗在前景。請讓 FF14 進入演奏模式（視窗不要最小化）。");
             if (!linked)
             {
@@ -797,15 +828,68 @@ namespace Ff14Key2Key
             UpdateUi();
         }
 
+        // ------------------------------------------------------------------
+        // Chord spread setting (can be changed while mapping)
+        // ------------------------------------------------------------------
+        private int CurrentSpreadMs()
+        {
+            return spreadCheck.Checked ? (int)spreadValue.Value : 0;
+        }
+
+        private void LoadSpreadSetting()
+        {
+            Config cfg = Config.Load(ConfigPath);
+            loadingSpread = true;
+            try
+            {
+                int ms = cfg.ChordSpreadMs;
+                spreadCheck.Checked = ms > 0;
+                if (ms > 0) spreadValue.Value = Math.Max((int)spreadValue.Minimum, Math.Min((int)spreadValue.Maximum, ms));
+                spreadValue.Enabled = spreadCheck.Checked;
+            }
+            finally
+            {
+                loadingSpread = false;
+            }
+        }
+
+        private void OnSpreadChanged(object sender, EventArgs e)
+        {
+            spreadValue.Enabled = spreadCheck.Checked;
+            if (loadingSpread) return;
+            int ms = CurrentSpreadMs();
+            if (spreader != null) spreader.SpreadMs = ms;   // takes effect at once, also while mapping
+            if (sender == spreadCheck)
+            {
+                AddLog(ms > 0
+                    ? "和弦錯開：開啟，" + ms.ToString() + " 毫秒（同時按下的音會由低到高錯開送出）。"
+                    : "和弦錯開：關閉。");
+            }
+            if (!File.Exists(ConfigPath)) return;   // saved together with the calibration
+            try
+            {
+                Config cfg = Config.Load(ConfigPath);
+                cfg.ChordSpreadMs = ms;
+                cfg.Save(ConfigPath);
+            }
+            catch (Exception ex)
+            {
+                AddLog("無法寫入設定檔：" + ex.Message);
+            }
+        }
+
         // Releases every key, closes the device, back to Idle. message == null: log nothing.
         private void StopMapping(string message)
         {
             Engine e = engine;
+            ChordSpreader spr = spreader;
             MidiIn m = midi;
             engine = null;
+            spreader = null;
             midi = null;
             if (liveEngine == e) liveEngine = null;
             if (e != null) e.Shutdown();   // free every key first
+            if (spr != null) spr.Stop();
             if (m != null) m.Close();
             if (mode == Mode.Mapping) mode = Mode.Idle;
             if (message != null) AddLog(message);
@@ -958,6 +1042,7 @@ namespace Ff14Key2Key
         {
             if (mode != Mode.Mapping || engine == null) return;
             bool pause = !engine.IsPaused;
+            if (pause && spreader != null) spreader.Clear();   // notes still waiting to be spread are dropped too
             engine.SetPaused(pause);
             AddLog(pause
                 ? "已暫停擷取，所有按鍵都已放開。MIDI 訊號不會送到遊戲（再按一次「繼續擷取」恢復）。"
@@ -1021,6 +1106,7 @@ namespace Ff14Key2Key
 
             cfg.BaseNote = low;
             cfg.Device = dev.Name;
+            cfg.ChordSpreadMs = CurrentSpreadMs();   // config.txt may not exist yet: keep the checkbox setting
             try
             {
                 cfg.Save(ConfigPath);
@@ -1106,7 +1192,8 @@ namespace Ff14Key2Key
                     keyEvents.Add(off, false);
                     if (cancelled || stop.WaitOne(rest)) return;
                 }
-                pending.Add(string.Format("  C 大調和弦（按鍵 {0} {1} {2} 同時按）", Keymap.Keys[12], Keymap.Keys[16], Keymap.Keys[19]));
+                pending.Add(string.Format("  C 大調和弦（按鍵 {0} {1} {2} 同時按；FF14 一次只能發一個音，通常只會聽到其中一個）",
+                    Keymap.Keys[12], Keymap.Keys[16], Keymap.Keys[19]));
                 eng.PressOffset(12);
                 eng.PressOffset(16);
                 eng.PressOffset(19);

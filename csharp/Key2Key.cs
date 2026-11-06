@@ -340,6 +340,212 @@ namespace Ff14Key2Key
     }
 
     // ======================================================================
+    // ChordSpreader (optional, chord_spread_ms > 0).
+    // FF14 plays one note at a time, and key-downs that reach the game at the same instant mostly collapse into one
+    // note. With spreading on, Note Ons go to the engine at least SpreadMs apart, and notes pressed together (within
+    // CollectMs) go out from low to high, so the highest (melody) note is the one that keeps sounding.
+    // Only Note Ons the player pressed are delayed: it never creates or repeats a note. A Note Off for a note that is
+    // still waiting cancels it. SpreadMs 0 = straight through, no delay at all.
+    // Every engine call happens under this class's lock, so a Note Off can never overtake its own Note On
+    // (which would leave the key down). The MIDI callback never waits: the delays run on a timer thread.
+    // ======================================================================
+    internal sealed class ChordSpreader
+    {
+        public const int MaxSpreadMs = 200;
+        public const int CollectMs = 8;   // notes arriving within this window count as "pressed together"
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint uPeriod);
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint uPeriod);
+
+        private readonly object sync = new object();
+        private readonly Engine engine;
+        private readonly List<MidiMessage> waiting = new List<MidiMessage>();   // arrival window still open
+        private readonly List<MidiMessage> ready = new List<MidiMessage>();     // sorted, going out one by one
+        private readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+        private readonly AutoResetEvent wake = new AutoResetEvent(false);
+        private readonly Thread thread;
+        private long windowEnd;
+        private long lastDown = -100000;
+        private int spreadMs;
+        private bool stopped;
+        private bool timerRaised;
+
+        public ChordSpreader(Engine engine, int spreadMs)
+        {
+            this.engine = engine;
+            SpreadMs = spreadMs;
+            thread = new Thread(Run);
+            thread.IsBackground = true;
+            thread.Name = "chord spreader";
+            thread.Start();
+        }
+
+        // 0 = off; otherwise clamped to 1..MaxSpreadMs. Can be changed while running.
+        public int SpreadMs
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return spreadMs;
+                }
+            }
+            set
+            {
+                int v = value;
+                if (v < 0) v = 0;
+                if (v > MaxSpreadMs) v = MaxSpreadMs;
+                lock (sync)
+                {
+                    spreadMs = v;
+                    // Default Windows timer steps are ~15.6 ms, too coarse for a 20-30 ms spread.
+                    if (v > 0 && !timerRaised && !stopped)
+                    {
+                        timerRaised = true;
+                        try { timeBeginPeriod(1); } catch (Exception) { }
+                    }
+                }
+                wake.Set();
+            }
+        }
+
+        // Called on the MIDI thread instead of Engine.Handle.
+        public void Handle(MidiMessage m)
+        {
+            lock (sync)
+            {
+                if (stopped)
+                {
+                    engine.Handle(m);   // the engine is shut down by then; it ignores everything
+                    return;
+                }
+                if (m.Kind == MidiKind.NoteOn)
+                {
+                    if (spreadMs == 0 && waiting.Count == 0 && ready.Count == 0)
+                    {
+                        engine.Handle(m);
+                        lastDown = clock.ElapsedMilliseconds;
+                        return;
+                    }
+                    RemoveLocked(m);   // the same key pressed again while still waiting: keep only the newest
+                    if (waiting.Count == 0) windowEnd = clock.ElapsedMilliseconds + CollectMs;
+                    waiting.Add(m);
+                    wake.Set();
+                    return;
+                }
+                if (m.Kind == MidiKind.NoteOff)
+                {
+                    if (RemoveLocked(m)) return;   // never reached the game: nothing to release
+                    engine.Handle(m);
+                    return;
+                }
+                if (m.Kind == MidiKind.AllNotesOff)
+                {
+                    waiting.Clear();
+                    ready.Clear();
+                }
+                engine.Handle(m);
+            }
+        }
+
+        // Drop the notes that are still waiting (used on pause).
+        public void Clear()
+        {
+            lock (sync)
+            {
+                waiting.Clear();
+                ready.Clear();
+            }
+        }
+
+        public void Stop()
+        {
+            lock (sync)
+            {
+                if (stopped) return;
+                stopped = true;
+                waiting.Clear();
+                ready.Clear();
+                if (timerRaised)
+                {
+                    timerRaised = false;
+                    try { timeEndPeriod(1); } catch (Exception) { }
+                }
+            }
+            wake.Set();
+            if (Thread.CurrentThread != thread) thread.Join(500);
+        }
+
+        private bool RemoveLocked(MidiMessage m)
+        {
+            bool removed = false;
+            for (int i = waiting.Count - 1; i >= 0; i--)
+            {
+                if (waiting[i].Data1 == m.Data1 && waiting[i].Channel == m.Channel)
+                {
+                    waiting.RemoveAt(i);
+                    removed = true;
+                }
+            }
+            for (int i = ready.Count - 1; i >= 0; i--)
+            {
+                if (ready[i].Data1 == m.Data1 && ready[i].Channel == m.Channel)
+                {
+                    ready.RemoveAt(i);
+                    removed = true;
+                }
+            }
+            return removed;
+        }
+
+        private static int CompareNotes(MidiMessage a, MidiMessage b)
+        {
+            return a.Data1.CompareTo(b.Data1);
+        }
+
+        private void Run()
+        {
+            while (true)
+            {
+                int waitMs = Timeout.Infinite;
+                lock (sync)
+                {
+                    if (stopped) return;
+                    long now = clock.ElapsedMilliseconds;
+                    if (waiting.Count > 0 && (now >= windowEnd || spreadMs == 0))
+                    {
+                        waiting.Sort(CompareNotes);   // low to high: the top note sounds last and keeps sounding
+                        ready.AddRange(waiting);
+                        waiting.Clear();
+                    }
+                    while (ready.Count > 0)
+                    {
+                        long due = (spreadMs == 0) ? now : lastDown + spreadMs;
+                        if (now < due)
+                        {
+                            waitMs = (int)(due - now);
+                            break;
+                        }
+                        MidiMessage next = ready[0];
+                        ready.RemoveAt(0);
+                        engine.Handle(next);
+                        lastDown = now;
+                    }
+                    if (waiting.Count > 0)
+                    {
+                        int w = (int)Math.Max(1, windowEnd - now);
+                        waitMs = (waitMs == Timeout.Infinite) ? w : Math.Min(waitMs, w);
+                    }
+                }
+                wake.WaitOne(waitMs);
+            }
+        }
+    }
+
+    // ======================================================================
     // Config (config.txt next to the exe).
     // ======================================================================
     internal sealed class Config
@@ -347,6 +553,7 @@ namespace Ff14Key2Key
         public int BaseNote = Keymap.DefaultBase;
         public string Device = "";
         public int Channel = 0;
+        public int ChordSpreadMs = 0;
 
         public static Config Load(string path)
         {
@@ -391,6 +598,10 @@ namespace Ff14Key2Key
                 {
                     c.Device = val;
                 }
+                else if (key == "chord_spread_ms")
+                {
+                    if (TryParseInt(val, out n) && n >= 0 && n <= ChordSpreader.MaxSpreadMs) c.ChordSpreadMs = n;
+                }
                 // unknown keys are ignored
             }
             return c;
@@ -418,6 +629,10 @@ namespace Ff14Key2Key
             sb.Append("\r\n");
             sb.Append("# channel：只接受這個 MIDI 頻道（1~16）。0 = 接受全部頻道。\r\n");
             sb.Append("channel=").Append(Channel.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
+            sb.Append("\r\n");
+            sb.Append("# chord_spread_ms：和弦錯開（毫秒）。FF14 一次只能發一個音，同時按下的鍵通常只會響一個。\r\n");
+            sb.Append("# 設成 10~200：同時按下的音會由低到高、每個間隔這麼多毫秒送出（最後持續的是最高音）。0 = 關閉。\r\n");
+            sb.Append("chord_spread_ms=").Append(ChordSpreadMs.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
             return sb.ToString();
         }
 
@@ -1883,7 +2098,8 @@ namespace Ff14Key2Key
                     if (StopEvent.WaitOne(rest)) return TestCancelled();
                 }
 
-                Console.WriteLine("  C 大調和弦（按鍵 {0} {1} {2} 同時按）", Keymap.Keys[12], Keymap.Keys[16], Keymap.Keys[19]);
+                Console.WriteLine("  C 大調和弦（按鍵 {0} {1} {2} 同時按；FF14 一次只能發一個音，通常只會聽到其中一個）",
+                    Keymap.Keys[12], Keymap.Keys[16], Keymap.Keys[19]);
                 engine.PressOffset(12);
                 engine.PressOffset(16);
                 engine.PressOffset(19);
@@ -2025,13 +2241,14 @@ namespace Ff14Key2Key
 
             int baseNote = (opt.BaseNote >= 0) ? opt.BaseNote : cfg.BaseNote;
             int channel = (opt.Channel >= 0) ? opt.Channel : cfg.Channel;
-            return RunMapping(dev, baseNote, channel, opt.Verbose);
+            return RunMapping(dev, baseNote, channel, cfg.ChordSpreadMs, opt.Verbose);
         }
 
-        private static int RunMapping(MidiDeviceInfo dev, int baseNote, int channel, bool verbose)
+        private static int RunMapping(MidiDeviceInfo dev, int baseNote, int channel, int spreadMs, bool verbose)
         {
             Ff14PostSink sink = new Ff14PostSink();
             Engine engine = new Engine(sink, baseNote, channel);
+            ChordSpreader spreader = new ChordSpreader(engine, spreadMs);
             LogQueue log = new LogQueue();
             MidiIn midi = null;
             int rc = RcOk;
@@ -2041,12 +2258,13 @@ namespace Ff14Key2Key
                 // Runs on the MIDI thread: no console output here, only the log queue (--verbose) and the engine.
                 MidiShortHandler handler = delegate(uint raw)
                 {
+                    MidiMessage msg = MidiMessage.Parse(raw);
                     if (verbose)
                     {
-                        string line = Describe(MidiMessage.Parse(raw), baseNote, channel);
+                        string line = Describe(msg, baseNote, channel);
                         if (line != null) log.Add(line);
                     }
-                    engine.HandleRaw(raw);
+                    spreader.Handle(msg);
                 };
                 try
                 {
@@ -2059,7 +2277,7 @@ namespace Ff14Key2Key
                 }
 
                 bool linked = sink.Poll();
-                PrintRunHeader(dev, baseNote, channel, linked);
+                PrintRunHeader(dev, baseNote, channel, spreadMs, linked);
                 while (!StopEvent.WaitOne(50))
                 {
                     bool nowLinked = sink.Poll();
@@ -2082,6 +2300,7 @@ namespace Ff14Key2Key
             finally
             {
                 engine.Shutdown();
+                spreader.Stop();
                 if (midi != null) midi.Close();
                 EndMode();
             }
@@ -2094,7 +2313,7 @@ namespace Ff14Key2Key
             return rc;
         }
 
-        private static void PrintRunHeader(MidiDeviceInfo dev, int baseNote, int channel, bool linked)
+        private static void PrintRunHeader(MidiDeviceInfo dev, int baseNote, int channel, int spreadMs, bool linked)
         {
             Console.WriteLine("==========================================");
             Console.WriteLine("  映射中：MIDI 鍵盤 → FF14 按鍵");
@@ -2103,6 +2322,9 @@ namespace Ff14Key2Key
             Console.WriteLine("  最低音：MIDI {0} ({1})，頻道：{2}", baseNote, Keymap.NoteName(baseNote), ChannelText(channel));
             Console.WriteLine("  有效音域：MIDI {0} ({1}) ~ {2} ({3})",
                 baseNote, Keymap.NoteName(baseNote), baseNote + 36, Keymap.NoteName(baseNote + 36));
+            Console.WriteLine("  和弦錯開：{0}", spreadMs > 0
+                ? spreadMs.ToString() + " 毫秒（同時按下的音由低到高錯開送出）"
+                : "關閉（FF14 一次只能發一個音；可在 config.txt 設定 chord_spread_ms）");
             Console.WriteLine();
             Console.WriteLine("  按鍵會直接送到 FF14 視窗，不管目前是哪個視窗在前景（實體鍵盤不受影響）。");
             if (linked)
