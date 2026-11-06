@@ -20,7 +20,7 @@ The tool works with a USB MIDI keyboard that has 37 keys. The author uses a MIDI
 - **Other buttons do not stop it.** The other buttons, knobs and touch strips of the keyboard (for example Play and Stop buttons, which send SysEx) do not press any key, and they cannot stop the mapping.
 - **You do not need to install anything.** It uses the C# compiler that is already in Windows. Double-click `build.bat` to make the program.
 
-![The window version during the test scale. The pressed key lights up on the keyboard picture.](docs/screenshot-gui.png)
+![The window version while mapping. Chord spread and octave follow are on, and the log shows that octave follow moved the keys back to the calibrated position.](docs/screenshot-gui.png)
 
 ## USAGE
 
