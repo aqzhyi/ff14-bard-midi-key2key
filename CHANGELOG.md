@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
 ### Added
 
 - **Window version** `ff14-key2key-gui.exe` (WinForms), next to the console version. Every function has a button. One button pauses and resumes. The program can hide in the system tray and keep running. A picture of the 37 keys lights up the keys you press. Only one copy can run at a time, and it supports high DPI. Both versions use the same `config.txt`. Thanks to s04353022. ([#1])
@@ -45,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - GitHub Actions builds the exe and publishes the release with a SHA256 file. A release can also be started by hand.
 - README in English and Traditional Chinese.
 
-[Unreleased]: https://github.com/aqzhyi/ff14-bard-midi-key2key/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aqzhyi/ff14-bard-midi-key2key/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aqzhyi/ff14-bard-midi-key2key/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aqzhyi/ff14-bard-midi-key2key/releases/tag/v0.1.0
 [#1]: https://github.com/aqzhyi/ff14-bard-midi-key2key/pull/1

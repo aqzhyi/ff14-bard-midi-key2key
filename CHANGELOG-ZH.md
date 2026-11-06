@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
 ### 新增
 
 - **視窗版** `ff14-key2key-gui.exe`（WinForms），與主控台版並存：所有功能都有按鈕，可以一鍵暫停／繼續擷取，也能縮到系統匣在背景執行；37 鍵琴鍵圖會亮起按下的鍵；只允許開一個，支援高 DPI。兩個版本共用同一份 `config.txt`。感謝 s04353022。（[#1]）
@@ -45,6 +47,7 @@
 - GitHub Actions 自動編譯 exe 並發布 Release，附 SHA256 檔；也可以手動觸發發布。
 - 英文與正體中文說明文件。
 
-[Unreleased]: https://github.com/aqzhyi/ff14-bard-midi-key2key/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aqzhyi/ff14-bard-midi-key2key/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aqzhyi/ff14-bard-midi-key2key/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aqzhyi/ff14-bard-midi-key2key/releases/tag/v0.1.0
 [#1]: https://github.com/aqzhyi/ff14-bard-midi-key2key/pull/1
