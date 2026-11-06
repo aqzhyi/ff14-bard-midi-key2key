@@ -114,6 +114,7 @@ namespace Ff14Key2Key
         private Mode mode = Mode.Idle;
         private Engine engine;          // mapping
         private MidiIn midi;            // mapping
+        private MidiIn monitorMidi;     // monitor
         private Thread testThread;      // test
         private Engine testEngine;      // test
         private ManualResetEvent testStop;
@@ -241,6 +242,7 @@ namespace Ff14Key2Key
         {
             StopMapping(null);
             AbortTest();
+            StopMonitor(null);
         }
 
         public void RecoverFromError(Exception ex)
@@ -445,6 +447,7 @@ namespace Ff14Key2Key
             if (nowLinked != linked) SetLinked(nowLinked, false);
             if (mode == Mode.Mapping) TickMapping();
             if (mode == Mode.Testing && testDone) FinishTest();
+            if (mode == Mode.Monitoring) TickMonitor();
         }
 
         private void DrainPending()
@@ -1091,8 +1094,77 @@ namespace Ff14Key2Key
             if (mode == Mode.Testing) mode = Mode.Idle;
         }
 
+        // ------------------------------------------------------------------
+        // Monitor: show the incoming notes only, never send a key.
+        // ------------------------------------------------------------------
         private void OnMonitorClick(object sender, EventArgs e)
         {
+            if (mode == Mode.Monitoring)
+            {
+                StopMonitor("已結束監看。");
+            }
+            else if (mode == Mode.Idle)
+            {
+                StartMonitor();
+            }
+        }
+
+        private void StartMonitor()
+        {
+            MidiDeviceInfo dev = SelectedDevice();
+            if (dev == null)
+            {
+                ShowWarning("找不到 MIDI 裝置。請接好 MIDI 鍵盤後按「重新整理」。");
+                return;
+            }
+            Config cfg = Config.Load(ConfigPath);
+            int baseNote = cfg.BaseNote;
+            int channel = cfg.Channel;
+            LogQueue log = pending;
+            // MIDI thread: only the thread-safe log queue.
+            MidiShortHandler handler = delegate(uint raw)
+            {
+                string line = Program.Describe(MidiMessage.Parse(raw), baseNote, channel);
+                if (line != null) log.Add("  " + line);
+            };
+            try
+            {
+                monitorMidi = MidiIn.Open(dev.Index, dev.Name, handler);
+            }
+            catch (MidiException ex)
+            {
+                AddLog(ex.Message);
+                ShowWarning(ex.Message);
+                return;
+            }
+            mode = Mode.Monitoring;
+            AddLog("監看模式（不會送出任何按鍵）：" + dev.Name);
+            AddLog(string.Format("  最低音：MIDI {0} ({1})，頻道：{2}。請按幾個琴鍵看看。",
+                baseNote, Keymap.NoteName(baseNote), ChannelText(channel)));
+            UpdateUi();
+        }
+
+        private void StopMonitor(string message)
+        {
+            MidiIn m = monitorMidi;
+            if (m == null) return;
+            monitorMidi = null;
+            m.Close();
+            DrainPending();   // the last notes before the message
+            if (mode == Mode.Monitoring) mode = Mode.Idle;
+            if (message != null) AddLog(message);
+            UpdateUi();
+        }
+
+        private void TickMonitor()
+        {
+            string err = monitorMidi.TakeCallbackError();
+            if (err != null) AddLog("警告：處理 MIDI 訊息時發生錯誤：" + err);
+            if (monitorMidi.CheckLost())
+            {
+                StopMonitor("MIDI 裝置中斷了（可能被拔掉或被其他程式搶走），已結束監看。");
+                ShowWarning("MIDI 裝置中斷了（可能被拔掉或被其他程式搶走）。\r\n\r\n請重新插好鍵盤，按「重新整理」後再試一次。");
+            }
         }
 
         private void OnKeymapClick(object sender, EventArgs e)
@@ -1121,7 +1193,8 @@ namespace Ff14Key2Key
             calibrateButton.Enabled = idle && HasDevices;
             testButton.Text = (mode == Mode.Testing) ? "■ 停止測試" : "測試音階";
             testButton.Enabled = idle || mode == Mode.Testing;
-            monitorButton.Enabled = false;
+            monitorButton.Text = (mode == Mode.Monitoring) ? "■ 結束監看" : "監看 MIDI";
+            monitorButton.Enabled = (idle && HasDevices) || mode == Mode.Monitoring;
             keymapButton.Enabled = false;
             backgroundButton.Enabled = mode != Mode.Calibrating;
             exitButton.Enabled = true;
