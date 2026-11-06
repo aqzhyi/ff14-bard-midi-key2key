@@ -1167,8 +1167,59 @@ namespace Ff14Key2Key
             }
         }
 
+        // ------------------------------------------------------------------
+        // Keymap table (non-modal, one at a time)
+        // ------------------------------------------------------------------
+        private Form keymapForm;
+
         private void OnKeymapClick(object sender, EventArgs e)
         {
+            if (keymapForm != null && !keymapForm.IsDisposed)
+            {
+                keymapForm.Close();   // re-open with the current base note
+            }
+            Config cfg = Config.Load(ConfigPath);
+            keymapForm = BuildKeymapForm(cfg.BaseNote);
+            keymapForm.Show(this);
+        }
+
+        private Form BuildKeymapForm(int baseNote)
+        {
+            Form f = new Form();
+            f.Text = string.Format("鍵位對照表（最低音 = MIDI {0} {1}）", baseNote, Keymap.NoteName(baseNote));
+            f.Font = Font;
+            f.Icon = Icon;
+            f.AutoScaleMode = AutoScaleMode.None;
+            f.ShowInTaskbar = false;
+            f.MinimizeBox = false;
+            f.StartPosition = FormStartPosition.CenterParent;
+            f.ClientSize = new Size(S(440), S(560));
+
+            ListView list = new ListView();
+            list.Dock = DockStyle.Fill;
+            list.View = View.Details;
+            list.FullRowSelect = true;
+            list.GridLines = true;
+            list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+            list.Columns.Add("偏移", S(60), HorizontalAlignment.Right);
+            list.Columns.Add("MIDI", S(70), HorizontalAlignment.Right);
+            list.Columns.Add("音名", S(80), HorizontalAlignment.Center);
+            list.Columns.Add("簡譜", S(90), HorizontalAlignment.Center);
+            list.Columns.Add("電腦鍵", S(100), HorizontalAlignment.Center);
+            list.BeginUpdate();
+            for (int off = 0; off < Keymap.KeyCount; off++)
+            {
+                ListViewItem item = new ListViewItem(off.ToString());
+                item.SubItems.Add((baseNote + off).ToString());
+                item.SubItems.Add(Keymap.NoteName(baseNote + off));
+                item.SubItems.Add(Keymap.Degree(off));
+                item.SubItems.Add(Keymap.Keys[off]);
+                if (Keymap.Degree(off).Length > 1 && off != 36) item.BackColor = Color.FromArgb(236, 236, 236);   // black keys
+                list.Items.Add(item);
+            }
+            list.EndUpdate();
+            f.Controls.Add(list);
+            return f;
         }
 
         private void OnClearClick(object sender, EventArgs e)
@@ -1195,7 +1246,7 @@ namespace Ff14Key2Key
             testButton.Enabled = idle || mode == Mode.Testing;
             monitorButton.Text = (mode == Mode.Monitoring) ? "■ 結束監看" : "監看 MIDI";
             monitorButton.Enabled = (idle && HasDevices) || mode == Mode.Monitoring;
-            keymapButton.Enabled = false;
+            keymapButton.Enabled = true;
             backgroundButton.Enabled = mode != Mode.Calibrating;
             exitButton.Enabled = true;
 
