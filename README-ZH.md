@@ -63,6 +63,8 @@ FF14 的樂器剛好是 37 個音（含黑鍵，C3 ~ C6），和 37 鍵的 MIDI 
 
 編譯用的是 Windows 內建的 .NET Framework C# 編譯器（`csc.exe`），不需要另外安裝 Visual Studio 或 SDK。
 
+想檢查程式碼，可以雙擊 `csharp\test.bat`：它會編譯並執行單元測試（不需要 MIDI 鍵盤，也不用開遊戲），全部通過會看到 `SUCCESS`。GitHub 也會在每次推送和每個 Pull Request 自動跑同樣的測試。
+
 ### 3. 啟動
 
 1. 把 MIDI 鍵盤接上電腦。關閉其他正在使用 MIDI 的程式（例如 DAW），因為 Windows 的 MIDI 輸入通常一次只能被一個程式使用。
@@ -189,12 +191,15 @@ FF14 的演奏模式一次只能發出一個音，同時按下好幾個鍵時，
 | `csharp\app.manifest` | 主控台版：要求系統管理員權限 |
 | `csharp\app.gui.manifest` | 視窗版：要求系統管理員權限、支援高 DPI |
 | `csharp\build.bat` | 編譯腳本（一次產生兩個 exe） |
+| `csharp\Tests.cs` | 單元測試（C# 5；和 `Key2Key.cs` 一起編譯） |
+| `csharp\test.bat` | 編譯並執行單元測試 |
 | `.github\workflows\release.yml` | 自動編譯並在 GitHub 發布 exe |
+| `.github\workflows\test.yml` | 每次推送和 Pull Request 時在 GitHub 執行單元測試 |
 | `KEYMAP.md` | 37 鍵對照表 |
 | `docs\screenshot.png`、`docs\screenshot-gui.png` | 說明文件的截圖 |
 | `docs\PRD-GUI.md` | 視窗版的需求規劃 |
 
-編譯出來的 `ff14-key2key.exe`、`ff14-key2key-gui.exe` 和你的校準檔 `config.txt` 不會進版本控制（見 `.gitignore`）。
+編譯出來的 `ff14-key2key.exe`、`ff14-key2key-gui.exe`、`ff14-key2key-tests.exe` 和你的校準檔 `config.txt` 不會進版本控制（見 `.gitignore`）。
 
 ## 免責聲明
 

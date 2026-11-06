@@ -1,0 +1,17 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run unit tests
+        shell: cmd
+        run: csharp\test.bat nopause

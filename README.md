@@ -62,6 +62,8 @@ Windows may show a warning ("Windows protected your PC"), because the files have
 
 The build uses the C# compiler (`csc.exe`) of .NET Framework. It is already in Windows. You do not need Visual Studio or an SDK.
 
+To check the code, double-click `csharp\test.bat`. It builds and runs the unit tests (no MIDI keyboard or game needed). If all tests pass, you see `SUCCESS`. GitHub runs the same tests for every push and every pull request.
+
 ### 3. Start the program
 
 1. Connect your MIDI keyboard. Close other programs that use MIDI, for example a DAW. In Windows, usually only one program can use a MIDI input at one time.
@@ -184,12 +186,15 @@ Turn on "chord spread" (window version: tick "和弦錯開" in the main window; 
 | `csharp\app.manifest` | Console version: asks for administrator rights |
 | `csharp\app.gui.manifest` | Window version: asks for administrator rights, supports high DPI |
 | `csharp\build.bat` | The build script (makes both exe files) |
+| `csharp\Tests.cs` | The unit tests (C# 5; built together with `Key2Key.cs`) |
+| `csharp\test.bat` | Builds and runs the unit tests |
 | `.github\workflows\release.yml` | Builds the exe files and makes the release on GitHub |
+| `.github\workflows\test.yml` | Runs the unit tests on GitHub for every push and pull request |
 | `KEYMAP.md` | The table of 37 keys |
 | `docs\screenshot.png`, `docs\screenshot-gui.png` | The screenshots in this README |
 | `docs\PRD-GUI.md` | The plan for the window version (Chinese) |
 
-The built files `ff14-key2key.exe` and `ff14-key2key-gui.exe` and your calibration file `config.txt` are not in version control (see `.gitignore`).
+The built files `ff14-key2key.exe`, `ff14-key2key-gui.exe` and `ff14-key2key-tests.exe` and your calibration file `config.txt` are not in version control (see `.gitignore`).
 
 ## Disclaimer
 
