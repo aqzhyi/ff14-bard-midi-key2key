@@ -175,6 +175,7 @@ namespace Ff14Key2Key
         private readonly int baseNote;
         private readonly int channel;
         private bool closed;
+        private bool paused;
 
         public Engine(IKeySink sink, int baseNote, int channel)
         {
@@ -199,7 +200,7 @@ namespace Ff14Key2Key
             if (channel != 0 && m.Channel != channel) return;
             lock (sync)
             {
-                if (closed) return;
+                if (closed || paused) return;
                 switch (m.Kind)
                 {
                     case MidiKind.NoteOn:
@@ -241,6 +242,29 @@ namespace Ff14Key2Key
             lock (sync)
             {
                 ReleaseAllLocked();
+            }
+        }
+
+        // Pause: release every pressed key and ignore MIDI input until resumed. Both happen under the same lock,
+        // so a Note On arriving at the same moment can never slip through and leave a key stuck.
+        // A key held through the pause is not marked down, so its later Note Off is ignored (no stray key-up).
+        public void SetPaused(bool value)
+        {
+            lock (sync)
+            {
+                paused = value;
+                if (paused) ReleaseAllLocked();
+            }
+        }
+
+        public bool IsPaused
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return paused;
+                }
             }
         }
 

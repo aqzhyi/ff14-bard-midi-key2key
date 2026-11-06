@@ -615,6 +615,21 @@ namespace Ff14Key2Key
 
         private void OnPauseClick(object sender, EventArgs e)
         {
+            TogglePause();
+        }
+
+        // ------------------------------------------------------------------
+        // Pause / resume (mapping only). The device stays open, so resuming is instant.
+        // ------------------------------------------------------------------
+        private void TogglePause()
+        {
+            if (mode != Mode.Mapping || engine == null) return;
+            bool pause = !engine.IsPaused;
+            engine.SetPaused(pause);
+            AddLog(pause
+                ? "已暫停擷取，所有按鍵都已放開。MIDI 訊號不會送到遊戲（再按一次「繼續擷取」恢復）。"
+                : "已繼續擷取。");
+            UpdateUi();
         }
 
         private void OnCalibrateClick(object sender, EventArgs e)
@@ -653,11 +668,13 @@ namespace Ff14Key2Key
         {
             bool idle = mode == Mode.Idle;
             bool mapping = mode == Mode.Mapping;
+            bool paused = mapping && engine != null && engine.IsPaused;
             deviceBox.Enabled = idle && HasDevices;
             refreshButton.Enabled = idle;
             runButton.Text = mapping ? "■ 停止映射" : "▶ 開始映射";
             runButton.Enabled = (idle && HasDevices) || mapping;
-            pauseButton.Enabled = false;
+            pauseButton.Text = paused ? "▶ 繼續擷取" : "Ⅱ 暫停擷取";
+            pauseButton.Enabled = mapping;
             calibrateButton.Enabled = false;
             testButton.Enabled = false;
             monitorButton.Enabled = false;
@@ -665,7 +682,12 @@ namespace Ff14Key2Key
             backgroundButton.Enabled = false;
             exitButton.Enabled = false;
 
-            if (mapping)
+            if (paused)
+            {
+                statusText.Text = "狀態：已暫停（MIDI 訊號不會送到遊戲）";
+                statusText.ForeColor = ColorPause;
+            }
+            else if (mapping)
             {
                 statusText.Text = "狀態：映射中";
                 statusText.ForeColor = ColorRun;
