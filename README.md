@@ -81,7 +81,7 @@ The buttons of the **window version** (the words in the program are Chinese):
 | Pause (Ⅱ 暫停擷取) / Resume (▶ 繼續擷取) | While mapping, stop sending keys to the game for a while. Held keys are let go at once. Click again to resume at once |
 | Calibrate (校準最低音) | Set again which MIDI note is the far left key |
 | Test scale (測試音階) | The program presses all 37 keys by itself. Use it to check the keys in the game. You do not need a MIDI keyboard |
-| Monitor MIDI (監看 MIDI) | It only shows the notes it gets. It does **not** press any key. Use it to find problems |
+| Monitor MIDI (監看 MIDI) | It shows every MIDI message it gets: notes, and also other buttons and knobs (CC, Program Change, Pitch Bend, SysEx such as MMC Play or Stop, and so on). Other messages are marked 「（不影響按鍵）」 (does not press a key). It does **not** press any key. Use it to find problems |
 | Key table (鍵位對照表) | Opens a window with the table of 37 keys |
 | Run in background (背景執行) | Hides the window in the system tray (bottom right). Mapping keeps working. Double-click the icon to show the window again. Right-click it to pause, resume or exit |
 | Exit (離開) | Lets go of all keys and closes the program. The ✕ button of the window does the same |
@@ -95,7 +95,7 @@ The **console version** shows a menu:
    | 1 Start mapping (開始映射) | Use the tool |
    | 2 Calibrate the lowest note (校準最低音) | Set again which MIDI note is the far left key |
    | 3 Test scale (測試音階) | The program presses all 37 keys by itself. Use it to check the keys in the game. You do not need a MIDI keyboard. |
-   | 4 Monitor MIDI (監看 MIDI) | It only shows the notes it gets. It does **not** press any key. Use it to find problems. |
+   | 4 Monitor MIDI (監看 MIDI) | It shows every MIDI message it gets: notes, and also other buttons and knobs (CC, Pitch Bend, SysEx and so on). Other messages are marked 「（不影響按鍵）」 (does not press a key). It does **not** press any key. Use it to find problems. |
    | 5 List MIDI devices (列出 MIDI 裝置) | See if the PC finds your keyboard |
    | 6 Show the key table (顯示鍵位對照表) | Print the table of 37 keys |
    | 0 Exit (離開) | Close the program |
@@ -133,7 +133,7 @@ Tip: with the console version, do not click the black program window with the mo
 ### 6. Check (we suggest this)
 
 - Test scale (console version: choose `3`). The program plays from the lowest note to the highest note by itself. If the scale goes up and there are no wrong notes, the keys in the game are the same as the keys in the program.
-- Monitor MIDI (console version: choose `4`). When you press a key, the program shows the note and the computer key. It does not send any key.
+- Monitor MIDI (console version: choose `4`). When you press a key, the program shows the note and the computer key. It also shows the other buttons, knobs and touch strips of the keyboard (CC like Sustain, Modulation and Volume, Program Change, Pitch Bend, pressure, and SysEx such as MMC Play or Stop). Use this to see what a button sends. It does not send any key.
 
 ## Config file `config.txt`
 
@@ -163,7 +163,7 @@ Turn on "chord spread" (window version: tick "和弦錯開" in the main window; 
 - **The window is found, but there is no sound.** First run option 3 (test scale). Then check these things: the game is in performance mode, you equipped an instrument, and the keys in the game are the same as the table above.
 - **No MIDI device is found.** Use another USB port. Unplug the keyboard and plug it in again. Close other programs that use MIDI.
 - **The program says "超出範圍" (out of range) when you press a key.** The Octave or Transpose button on the keyboard was changed. Set it back to the setting you used in the calibration, or calibrate again (option 2). If your keyboard has a "smart scale" function, turn it off.
-- **After I pressed a small button on the keyboard, no key works any more.** This was a bug in old versions. It is fixed. Please use the newest version. Many keyboards send SysEx from their buttons. For example, the 6 buttons of the MIDIPLUS X mini series send MMC transport commands (Play, Stop and so on). With the new MIDI system of Windows 11 (Windows MIDI Services), the old program stopped getting all MIDI input after a SysEx came in. You had to restart it. The new version gets buffers ready for SysEx first, so these buttons have no effect now.
+- **After I pressed a small button on the keyboard, no key works any more.** This was a bug in old versions. It is fixed. Please use the newest version. Many keyboards send SysEx from their buttons. For example, the 6 buttons of the MIDIPLUS X mini series send MMC transport commands (Play, Stop and so on). With the new MIDI system of Windows 11 (Windows MIDI Services), the old program stopped getting all MIDI input after a SysEx came in. You had to restart it. The new version gets buffers ready for SysEx first, so these buttons have no effect now. Monitor MIDI also shows the SysEx they send.
 - **The test scale is right, but your playing has wrong notes.** Calibrate again.
 - **Zhuyin symbols appear when you press keys.** Change your input method to English mode.
 - **You press several keys together, but the game plays only one.** This is a limit of FF14 (one note at a time). The program is not broken. You can turn on "Chord spread" (see above). This is also why you usually hear only one note in the "C major chord" at the end of the test scale.

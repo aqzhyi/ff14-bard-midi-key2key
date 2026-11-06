@@ -207,6 +207,8 @@ namespace Ff14Key2Key
             RegisterConfig();
             RegisterOptions();
             RegisterThreads();
+            RegisterMore();
+            RegisterSysex();
 
             int passed = 0;
             int failed = 0;
@@ -926,6 +928,94 @@ namespace Ff14Key2Key
                 feeder.Join();
                 e.SetPaused(true);   // releases whatever is still held
                 CheckBalanced(s.Events(), true);
+            });
+        }
+
+        // ------------------------------------------------------------------ config follow / Program texts
+        private static void RegisterMore()
+        {
+            Add("MidiMessage.Parse sets Status", delegate
+            {
+                Assert.Equal(0x93, MidiMessage.Parse(Raw(0x93, 60, 100)).Status, "93");
+                Assert.Equal(0xB0, MidiMessage.Parse(Raw(0xB0, 64, 127)).Status, "B0");
+                Assert.Equal(0xF8, MidiMessage.Parse(Raw(0xF8, 0, 0)).Status, "F8");
+            });
+            Add("Program.DescribeOther: control change", delegate
+            {
+                string s = Program.DescribeOther(MidiMessage.Parse(Raw(0xB0, 64, 127)));
+                Assert.True(s != null && s.Contains("CC 64") && s.Contains("Sustain"), "got: " + s);
+                Assert.True(s.Contains("127"), "value missing: " + s);
+            });
+            Add("Program.DescribeOther: program change, pitch bend, pressure", delegate
+            {
+                string pc = Program.DescribeOther(MidiMessage.Parse(Raw(0xC0, 5, 0)));
+                Assert.True(pc != null && pc.Contains("ProgramChange 5"), "program change: " + pc);
+                string pb = Program.DescribeOther(MidiMessage.Parse(Raw(0xE0, 0, 0x40)));
+                Assert.True(pb != null && pb.Contains("PitchBend 0"), "pitch bend centre: " + pb);
+                string cp = Program.DescribeOther(MidiMessage.Parse(Raw(0xD0, 30, 0)));
+                Assert.True(cp != null && cp.Contains("ChannelPressure 30"), "channel pressure: " + cp);
+            });
+            Add("Program.DescribeOther: system messages", delegate
+            {
+                Assert.True(Program.DescribeOther(MidiMessage.Parse(Raw(0xF8, 0, 0))) == null, "clock");
+                Assert.True(Program.DescribeOther(MidiMessage.Parse(Raw(0xFE, 0, 0))) == null, "active sensing");
+                string r = Program.DescribeOther(MidiMessage.Parse(Raw(0xFF, 0, 0)));
+                Assert.True(r != null && r.Contains("System 0xFF"), "reset: " + r);
+                Assert.True(Program.DescribeOther(MidiMessage.Parse(Raw(0x40, 0, 0))) == null, "data byte");
+            });
+            Add("Program.Describe: note shows offset and key", delegate
+            {
+                string s = Program.Describe(MidiMessage.Parse(Raw(0x90, 48, 100)), 48, 0);
+                Assert.True(s.Contains("NoteOn") && s.Contains("offset 0") && s.Contains("key A"), "got: " + s);
+                string t = Program.Describe(MidiMessage.Parse(Raw(0x90, 49, 100)), 48, 0);
+                Assert.True(t.Contains("offset 1") && t.Contains("key -"), "got: " + t);
+            });
+        }
+
+        // ------------------------------------------------------------------ SysEx description
+        private static string Mmc(byte command)
+        {
+            return Program.DescribeSysex(new byte[] { 0xF0, 0x7F, 0x74, 0x06, command, 0xF7 });
+        }
+
+        private static void RegisterSysex()
+        {
+            Add("Program.DescribeSysex: MIDIPLUS X3 mini Rewind message", delegate
+            {
+                string s = Mmc(0x05);
+                Assert.True(s != null, "null");
+                Assert.True(s.Contains("SysEx F0 7F 74 06 05 F7"), "bytes: " + s);
+                Assert.True(s.Contains("Rewind"), "name: " + s);
+                Assert.True(s.Contains("（不影響按鍵）"), "no-key note: " + s);
+            });
+            Add("Program.DescribeSysex: MMC command names", delegate
+            {
+                Assert.True(Mmc(0x04).Contains("Fast Forward"), "04");
+                Assert.True(Mmc(0x01).Contains("Stop"), "01");
+                Assert.True(Mmc(0x02).Contains("Play"), "02");
+                Assert.True(Mmc(0x06).Contains("Record"), "06");
+                Assert.True(Mmc(0x37).Contains("0x37"), "37");
+            });
+            Add("Program.DescribeSysex: null and empty give null", delegate
+            {
+                Assert.True(Program.DescribeSysex(null) == null, "null");
+                Assert.True(Program.DescribeSysex(new byte[0]) == null, "empty");
+            });
+            Add("Program.DescribeSysex: long non-MMC message is truncated to 16 bytes", delegate
+            {
+                byte[] d = new byte[20];
+                d[0] = 0xF0;
+                d[1] = 0x43;
+                for (int i = 2; i < 19; i++) d[i] = (byte)(0x20 + i);
+                d[19] = 0xF7;
+                string s = Program.DescribeSysex(d);
+                Assert.True(s.StartsWith("SysEx F0 43 22 23"), "start: " + s);
+                Assert.True(s.Contains("2F"), "16th byte shown: " + s);
+                Assert.True(!s.Contains(" 30"), "17th byte must not be shown: " + s);
+                Assert.True(!s.Contains("F7"), "last byte must not be shown: " + s);
+                Assert.True(s.Contains("共 20 bytes"), "total: " + s);
+                Assert.True(!s.Contains("MMC"), "not MMC: " + s);
+                Assert.True(s.Contains("（不影響按鍵）"), "no-key note: " + s);
             });
         }
     }

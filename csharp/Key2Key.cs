@@ -127,6 +127,7 @@ namespace Ff14Key2Key
     internal struct MidiMessage
     {
         public MidiKind Kind;
+        public int Status;    // raw status byte (0x80..0xFF), kept so the monitor can describe every message
         public int Channel;   // 1..16, or 0 for non-channel messages
         public int Data1;     // note number, or controller number
         public int Data2;     // velocity, or controller value
@@ -136,6 +137,7 @@ namespace Ff14Key2Key
         {
             MidiMessage m = new MidiMessage();
             int status = (int)(raw & 0xFF);
+            m.Status = status;
             m.Data1 = (int)((raw >> 8) & 0xFF);
             m.Data2 = (int)((raw >> 16) & 0xFF);
             m.Kind = MidiKind.Other;
@@ -999,6 +1001,9 @@ namespace Ff14Key2Key
 
     internal delegate void MidiShortHandler(uint raw);
 
+    // A complete SysEx message (F0 ... F7), or a piece of a long one.
+    internal delegate void MidiSysexHandler(byte[] data);
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     internal delegate void MidiInProc(IntPtr hMidiIn, uint wMsg, IntPtr dwInstance, IntPtr dwParam1, IntPtr dwParam2);
 
@@ -1006,7 +1011,7 @@ namespace Ff14Key2Key
     // transport commands by default). With Windows MIDI Services (Windows 11 24H2/25H2) a WinMM input that has no
     // SysEx buffer queued can stop delivering ALL later messages after a SysEx arrives - the keyboard then looks dead
     // until the device is reopened (microsoft/MIDI issue #957). So buffers are always queued, before midiInStart,
-    // and handed back as soon as they come back filled. The data itself is not used.
+    // and handed back as soon as they come back filled. The data itself is only shown by the monitor.
     // Buffers are re-queued by a small helper thread, never inside the winmm callback, and that thread is stopped
     // before midiInStop/midiInReset/midiInClose, so a re-queue can never race with the teardown.
     internal sealed class MidiIn
@@ -1090,6 +1095,7 @@ namespace Ff14Key2Key
 
         private readonly string name;
         private readonly MidiShortHandler handler;
+        private readonly MidiSysexHandler sysexHandler;
         private IntPtr handle = IntPtr.Zero;
         private GCHandle gch;
         private volatile bool closing;
@@ -1106,10 +1112,11 @@ namespace Ff14Key2Key
         private volatile bool requeueStop;
         private int sysexCount;
 
-        private MidiIn(string name, MidiShortHandler handler)
+        private MidiIn(string name, MidiShortHandler handler, MidiSysexHandler sysexHandler)
         {
             this.name = name;
             this.handler = handler;
+            this.sysexHandler = sysexHandler;
             this.nextCheck = Environment.TickCount;
         }
 
@@ -1145,7 +1152,13 @@ namespace Ff14Key2Key
         // Throws MidiException (message already in Traditional Chinese) on failure.
         public static MidiIn Open(int deviceIndex, string deviceName, MidiShortHandler handler)
         {
-            MidiIn m = new MidiIn(deviceName, handler);
+            return Open(deviceIndex, deviceName, handler, null);
+        }
+
+        // sysexHandler (may be null) runs on the winmm thread, like handler.
+        public static MidiIn Open(int deviceIndex, string deviceName, MidiShortHandler handler, MidiSysexHandler sysexHandler)
+        {
+            MidiIn m = new MidiIn(deviceName, handler, sysexHandler);
             m.DoOpen(deviceIndex);
             return m;
         }
@@ -1381,6 +1394,20 @@ namespace Ff14Key2Key
                 if (n > 0)
                 {
                     Interlocked.Increment(ref sysexCount);
+                    MidiSysexHandler sh = sysexHandler;
+                    if (sh != null && msg == MIM_LONGDATA)
+                    {
+                        byte[] data = new byte[Math.Min(n, SysexBufferSize)];
+                        IntPtr p = Marshal.ReadIntPtr(param1);   // lpData is the first field
+                        Marshal.Copy(p, data, 0, data.Length);
+                        try
+                        {
+                            sh(data);
+                        }
+                        catch (Exception)
+                        {
+                        }
+                    }
                 }
                 lock (requeueSync)
                 {
@@ -2309,9 +2336,14 @@ namespace Ff14Key2Key
                     string line = Describe(MidiMessage.Parse(raw), baseNote, channel);
                     if (line != null) log.Add(line);
                 };
+                MidiSysexHandler sysex = delegate(byte[] data)
+                {
+                    string line = DescribeSysex(data);
+                    if (line != null) log.Add(line);
+                };
                 try
                 {
-                    midi = MidiIn.Open(dev.Index, dev.Name, handler);
+                    midi = MidiIn.Open(dev.Index, dev.Name, handler, sysex);
                 }
                 catch (MidiException ex)
                 {
@@ -2322,7 +2354,7 @@ namespace Ff14Key2Key
                 Console.WriteLine("監看模式（不會送出任何按鍵）");
                 Console.WriteLine("  裝置：" + dev.Name);
                 Console.WriteLine("  最低音：MIDI {0} ({1})，頻道：{2}", baseNote, Keymap.NoteName(baseNote), ChannelText(channel));
-                Console.WriteLine("  請按幾個琴鍵看看。按 Ctrl+C 結束。");
+                Console.WriteLine("  請按幾個琴鍵看看；也可以按鍵盤上其他的按鈕、轉輪，看看它們送出什麼。按 Ctrl+C 結束。");
                 Console.WriteLine();
                 while (!StopEvent.WaitOne(30))
                 {
@@ -2365,7 +2397,77 @@ namespace Ff14Key2Key
             {
                 return "AllNotesOff (CC " + m.Data1.ToString() + ") -> 全部放開";
             }
-            return null;
+            return DescribeOther(m);
+        }
+
+        // Messages that never press a key. Shown anyway, so the monitor can tell what a keyboard's extra buttons send.
+        // Clock (F8) and Active Sensing (FE) arrive many times a second and are left out.
+        internal static string DescribeOther(MidiMessage m)
+        {
+            const string NoKey = "  （不影響按鍵）";
+            int type = m.Status & 0xF0;
+            string ch = " 頻道 " + m.Channel.ToString();
+            if (m.Status < 0x80) return null;
+            if (type == 0xB0)
+            {
+                return "CC " + m.Data1.ToString() + ControllerName(m.Data1) + " = " + m.Data2.ToString() + ch + NoKey;
+            }
+            if (type == 0xC0) return "ProgramChange " + m.Data1.ToString() + ch + NoKey;
+            if (type == 0xE0) return "PitchBend " + ((m.Data2 << 7 | m.Data1) - 8192).ToString() + ch + NoKey;
+            if (type == 0xD0) return "ChannelPressure " + m.Data1.ToString() + ch + NoKey;
+            if (type == 0xA0) return "PolyPressure " + m.Data1.ToString() + " = " + m.Data2.ToString() + ch + NoKey;
+            if (m.Status == 0xF8 || m.Status == 0xFE) return null;
+            return "System 0x" + m.Status.ToString("X2") + NoKey;
+        }
+
+        // One monitor line for a SysEx message, e.g. "SysEx F0 7F 7F 06 02 F7（MMC 播放控制：Play）  （不影響按鍵）".
+        internal static string DescribeSysex(byte[] data)
+        {
+            if (data == null || data.Length == 0) return null;
+            StringBuilder sb = new StringBuilder("SysEx");
+            int shown = Math.Min(data.Length, 16);
+            for (int i = 0; i < shown; i++)
+            {
+                sb.Append(' ').Append(data[i].ToString("X2"));
+            }
+            if (data.Length > shown) sb.Append(" ...（共 ").Append(data.Length.ToString()).Append(" bytes）");
+            // MMC: F0 7F <device> 06 <command> F7
+            if (data.Length >= 5 && data[0] == 0xF0 && data[1] == 0x7F && data[3] == 0x06)
+            {
+                sb.Append("（MMC 播放控制：").Append(MmcName(data[4])).Append('）');
+            }
+            sb.Append("  （不影響按鍵）");
+            return sb.ToString();
+        }
+
+        private static string MmcName(int command)
+        {
+            switch (command)
+            {
+                case 0x01: return "Stop";
+                case 0x02: return "Play";
+                case 0x03: return "Deferred Play";
+                case 0x04: return "Fast Forward";
+                case 0x05: return "Rewind";
+                case 0x06: return "Record";
+                case 0x07: return "Record Exit";
+                case 0x09: return "Pause";
+                default: return "0x" + command.ToString("X2");
+            }
+        }
+
+        private static string ControllerName(int cc)
+        {
+            switch (cc)
+            {
+                case 1: return " (Modulation)";
+                case 7: return " (Volume)";
+                case 10: return " (Pan)";
+                case 11: return " (Expression)";
+                case 64: return " (Sustain)";
+                case 121: return " (Reset All Controllers)";
+                default: return "";
+            }
         }
 
         private static string ChannelText(int channel)
@@ -2421,9 +2523,18 @@ namespace Ff14Key2Key
                     }
                     spreader.Handle(msg);
                 };
+                MidiSysexHandler sysex = null;
+                if (verbose)
+                {
+                    sysex = delegate(byte[] data)
+                    {
+                        string line = DescribeSysex(data);
+                        if (line != null) log.Add(line);
+                    };
+                }
                 try
                 {
-                    midi = MidiIn.Open(dev.Index, dev.Name, handler);
+                    midi = MidiIn.Open(dev.Index, dev.Name, handler, sysex);
                 }
                 catch (MidiException ex)
                 {

@@ -1304,9 +1304,14 @@ namespace Ff14Key2Key
                 if (line != null) log.Add("  " + line);
                 LampForMessage(msg, baseNote, channel, null);
             };
+            MidiSysexHandler sysex = delegate(byte[] data)
+            {
+                string line = Program.DescribeSysex(data);
+                if (line != null) log.Add("  " + line);
+            };
             try
             {
-                monitorMidi = MidiIn.Open(dev.Index, dev.Name, handler);
+                monitorMidi = MidiIn.Open(dev.Index, dev.Name, handler, sysex);
             }
             catch (MidiException ex)
             {
