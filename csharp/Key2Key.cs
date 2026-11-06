@@ -1002,11 +1002,51 @@ namespace Ff14Key2Key
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     internal delegate void MidiInProc(IntPtr hMidiIn, uint wMsg, IntPtr dwInstance, IntPtr dwParam1, IntPtr dwParam2);
 
+    // SysEx buffers: many keyboards send SysEx from their extra buttons (the MIDIPLUS X mini's buttons 1-6 send MMC
+    // transport commands by default). With Windows MIDI Services (Windows 11 24H2/25H2) a WinMM input that has no
+    // SysEx buffer queued can stop delivering ALL later messages after a SysEx arrives - the keyboard then looks dead
+    // until the device is reopened (microsoft/MIDI issue #957). So buffers are always queued, before midiInStart,
+    // and handed back as soon as they come back filled. The data itself is not used.
+    // Buffers are re-queued by a small helper thread, never inside the winmm callback, and that thread is stopped
+    // before midiInStop/midiInReset/midiInClose, so a re-queue can never race with the teardown.
     internal sealed class MidiIn
     {
         private const uint MIM_CLOSE = 0x3C2;
         private const uint MIM_DATA = 0x3C3;
+        private const uint MIM_LONGDATA = 0x3C4;
+        private const uint MIM_LONGERROR = 0x3C6;
         private const uint CALLBACK_FUNCTION = 0x00030000;
+        private const int SysexBufferCount = 8;
+        private const int SysexBufferSize = 1024;
+
+        // typedef struct midihdr_tag { LPSTR lpData; DWORD dwBufferLength; DWORD dwBytesRecorded; DWORD_PTR dwUser;
+        //   DWORD dwFlags; struct midihdr_tag *lpNext; DWORD_PTR reserved; DWORD dwOffset; DWORD_PTR dwReserved[8]; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MIDIHDR
+        {
+            public IntPtr lpData;
+            public uint dwBufferLength;
+            public uint dwBytesRecorded;
+            public IntPtr dwUser;
+            public uint dwFlags;
+            public IntPtr lpNext;
+            public IntPtr reserved;
+            public uint dwOffset;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)]
+            public IntPtr[] dwReserved;
+        }
+
+        private static readonly int HeaderSize = Marshal.SizeOf(typeof(MIDIHDR));
+        private static readonly int BytesRecordedOffset = IntPtr.Size + 4;   // offset of dwBytesRecorded in MIDIHDR
+
+        [DllImport("winmm.dll", EntryPoint = "midiInPrepareHeader")]
+        private static extern uint midiInPrepareHeader(IntPtr hMidiIn, IntPtr lpMidiInHdr, uint cbMidiInHdr);
+
+        [DllImport("winmm.dll", EntryPoint = "midiInUnprepareHeader")]
+        private static extern uint midiInUnprepareHeader(IntPtr hMidiIn, IntPtr lpMidiInHdr, uint cbMidiInHdr);
+
+        [DllImport("winmm.dll", EntryPoint = "midiInAddBuffer")]
+        private static extern uint midiInAddBuffer(IntPtr hMidiIn, IntPtr lpMidiInHdr, uint cbMidiInHdr);
 
         // typedef struct tagMIDIINCAPSW { WORD wMid; WORD wPid; MMVERSION vDriverVersion;
         //                                 WCHAR szPname[32]; DWORD dwSupport; }  => 76 bytes
@@ -1058,12 +1098,25 @@ namespace Ff14Key2Key
         private bool callbackErrorSeen;
         private int nextCheck;
         private int missCount;
+        private readonly List<IntPtr> headers = new List<IntPtr>();   // unmanaged MIDIHDR blocks (data right after)
+        private readonly object requeueSync = new object();
+        private readonly Queue<IntPtr> requeue = new Queue<IntPtr>();
+        private readonly AutoResetEvent requeueWake = new AutoResetEvent(false);
+        private Thread requeueThread;
+        private volatile bool requeueStop;
+        private int sysexCount;
 
         private MidiIn(string name, MidiShortHandler handler)
         {
             this.name = name;
             this.handler = handler;
             this.nextCheck = Environment.TickCount;
+        }
+
+        // SysEx messages received so far (diagnostics).
+        public int SysexCount
+        {
+            get { return Thread.VolatileRead(ref sysexCount); }
         }
 
         public static List<MidiDeviceInfo> ListDevices()
@@ -1108,32 +1161,119 @@ namespace Ff14Key2Key
                 throw new MidiException(DescribeError(r, "開啟"));
             }
             handle = h;
+            AddSysexBuffers(h);   // before midiInStart (see the class comment)
+            requeueThread = new Thread(RequeueLoop);
+            requeueThread.IsBackground = true;
+            requeueThread.Name = "midi sysex buffers";
+            requeueThread.Start();
             r = midiInStart(handle);
             if (r != 0)
             {
-                IntPtr h2 = handle;
-                handle = IntPtr.Zero;
-                closing = true;
-                uint rc = midiInClose(h2);
-                if (rc == 0 && gch.IsAllocated) gch.Free();
+                Close();
                 throw new MidiException(DescribeError(r, "啟動"));
             }
         }
 
-        // Stop -> reset -> close. Never call this from inside the callback.
+        // Stop -> reset -> unprepare -> close. Never call this from inside the callback.
         public void Close()
         {
             IntPtr h = handle;
             if (h == IntPtr.Zero) return;
-            handle = IntPtr.Zero;
             closing = true;
+            StopRequeue();   // no midiInAddBuffer may run during the teardown below
+            handle = IntPtr.Zero;
             try { midiInStop(h); } catch (Exception) { }
-            try { midiInReset(h); } catch (Exception) { }
+            try { midiInReset(h); } catch (Exception) { }   // hands every queued buffer back
+            bool allUnprepared = ReleaseSysexBuffers(h);
             uint r = 1;
             try { r = midiInClose(h); } catch (Exception) { }
-            if (r == 0 && gch.IsAllocated)
+            if (r == 0)
             {
-                gch.Free();
+                if (allUnprepared) FreeSysexBuffers();   // otherwise leak a few KB rather than free memory winmm may still use
+                if (gch.IsAllocated) gch.Free();
+            }
+        }
+
+        private void AddSysexBuffers(IntPtr h)
+        {
+            for (int i = 0; i < SysexBufferCount; i++)
+            {
+                IntPtr block = Marshal.AllocHGlobal(HeaderSize + SysexBufferSize);
+                MIDIHDR hdr = new MIDIHDR();
+                hdr.lpData = new IntPtr(block.ToInt64() + HeaderSize);
+                hdr.dwBufferLength = SysexBufferSize;
+                hdr.dwReserved = new IntPtr[8];
+                Marshal.StructureToPtr(hdr, block, false);
+                if (midiInPrepareHeader(h, block, (uint)HeaderSize) != 0)
+                {
+                    Marshal.FreeHGlobal(block);
+                    continue;   // without this buffer; the others still help
+                }
+                headers.Add(block);
+                midiInAddBuffer(h, block, (uint)HeaderSize);
+            }
+        }
+
+        // Returns true when every buffer was unprepared (so its memory may be freed).
+        private bool ReleaseSysexBuffers(IntPtr h)
+        {
+            bool all = true;
+            for (int i = 0; i < headers.Count; i++)
+            {
+                uint r = 1;
+                try { r = midiInUnprepareHeader(h, headers[i], (uint)HeaderSize); } catch (Exception) { }
+                if (r != 0) all = false;
+            }
+            return all;
+        }
+
+        private void FreeSysexBuffers()
+        {
+            for (int i = 0; i < headers.Count; i++)
+            {
+                Marshal.FreeHGlobal(headers[i]);
+            }
+            headers.Clear();
+        }
+
+        private void StopRequeue()
+        {
+            requeueStop = true;
+            requeueWake.Set();
+            Thread t = requeueThread;
+            if (t != null && t != Thread.CurrentThread) t.Join(1000);
+            lock (requeueSync)
+            {
+                requeue.Clear();
+            }
+        }
+
+        // Hands filled SysEx buffers back to winmm, off the callback thread.
+        private void RequeueLoop()
+        {
+            while (true)
+            {
+                requeueWake.WaitOne();
+                while (true)
+                {
+                    if (requeueStop) return;
+                    IntPtr block;
+                    lock (requeueSync)
+                    {
+                        if (requeue.Count == 0) break;
+                        block = requeue.Dequeue();
+                    }
+                    IntPtr h = handle;
+                    if (h == IntPtr.Zero) return;
+                    try
+                    {
+                        Marshal.WriteInt32(block, BytesRecordedOffset, 0);
+                        midiInAddBuffer(h, block, (uint)HeaderSize);
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
             }
         }
 
@@ -1233,11 +1373,26 @@ namespace Ff14Key2Key
                     }
                 }
             }
+            else if (msg == MIM_LONGDATA || msg == MIM_LONGERROR)
+            {
+                if (closing) return;   // midiInReset handing the buffers back
+                int n = Marshal.ReadInt32(param1, BytesRecordedOffset);
+                if (msg == MIM_LONGDATA && n <= 0) return;
+                if (n > 0)
+                {
+                    Interlocked.Increment(ref sysexCount);
+                }
+                lock (requeueSync)
+                {
+                    requeue.Enqueue(param1);
+                }
+                requeueWake.Set();
+            }
             else if (msg == MIM_CLOSE)
             {
                 if (!closing) lost = true;
             }
-            // MIM_LONGDATA, MIM_ERROR and the rest are ignored on purpose.
+            // MIM_ERROR (a broken short message) and the rest are ignored on purpose.
         }
     }
 

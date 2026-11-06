@@ -16,6 +16,7 @@ The tool works with a USB MIDI keyboard that has 37 keys. The author uses a MIDI
 - **It works when the game is not in front.** The key messages go straight to the FF14 window. You can use your browser while you play. Your normal keyboard still works as usual.
 - **The first run helps you set up.** You do not need to know MIDI note numbers.
 - **There is a window version.** You use every function with buttons. One button pauses and resumes. The program can also hide in the system tray and keep running. The console version is still there too.
+- **Other buttons do not stop it.** The other buttons, knobs and touch strips of the keyboard (for example Play and Stop buttons, which send SysEx) do not press any key, and they cannot stop the mapping.
 - **You do not need to install anything.** It uses the C# compiler that is already in Windows. Double-click `build.bat` to make the program.
 
 ![The window version during the test scale. The pressed key lights up on the keyboard picture.](docs/screenshot-gui.png)
@@ -162,6 +163,7 @@ Turn on "chord spread" (window version: tick "和弦錯開" in the main window; 
 - **The window is found, but there is no sound.** First run option 3 (test scale). Then check these things: the game is in performance mode, you equipped an instrument, and the keys in the game are the same as the table above.
 - **No MIDI device is found.** Use another USB port. Unplug the keyboard and plug it in again. Close other programs that use MIDI.
 - **The program says "超出範圍" (out of range) when you press a key.** The Octave or Transpose button on the keyboard was changed. Set it back to the setting you used in the calibration, or calibrate again (option 2). If your keyboard has a "smart scale" function, turn it off.
+- **After I pressed a small button on the keyboard, no key works any more.** This was a bug in old versions. It is fixed. Please use the newest version. Many keyboards send SysEx from their buttons. For example, the 6 buttons of the MIDIPLUS X mini series send MMC transport commands (Play, Stop and so on). With the new MIDI system of Windows 11 (Windows MIDI Services), the old program stopped getting all MIDI input after a SysEx came in. You had to restart it. The new version gets buffers ready for SysEx first, so these buttons have no effect now.
 - **The test scale is right, but your playing has wrong notes.** Calibrate again.
 - **Zhuyin symbols appear when you press keys.** Change your input method to English mode.
 - **You press several keys together, but the game plays only one.** This is a limit of FF14 (one note at a time). The program is not broken. You can turn on "Chord spread" (see above). This is also why you usually hear only one note in the "C major chord" at the end of the test scale.
@@ -172,6 +174,7 @@ Turn on "chord spread" (window version: tick "和弦錯開" in the main window; 
 ## How it works
 
 - The tool reads MIDI input with the Windows `winmm` library. It sends "key down" and "key up" messages to the FF14 window with `PostMessage`. So the window does not need to be in front.
+- The tool always gets buffers ready for SysEx messages, even though it does not use them. With the new MIDI system of Windows 11 (Windows MIDI Services), MIDI input can stop when a SysEx message arrives and there is no buffer for it.
 - The tool only sends normal Windows key messages to the game window. It does not read or change the game memory. It does not put code into the game process. It does not play music by itself.
 - If the game is not open, the tool ignores the keys. When you open or restart the game, the tool connects again by itself.
 
