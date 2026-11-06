@@ -118,6 +118,17 @@ namespace Ff14Key2Key
         private bool filling;
         private bool exiting;
         private bool shutDown;
+        private bool balloonShown;
+
+        private NotifyIcon tray;
+        private ToolStripMenuItem trayShowItem;
+        private ToolStripMenuItem trayPauseItem;
+        private ToolStripMenuItem trayExitItem;
+        private Icon iconApp;
+        private Icon iconIdle;
+        private Icon iconRun;
+        private Icon iconPause;
+        private Icon iconBusy;
         private List<MidiDeviceInfo> devices = new List<MidiDeviceInfo>();
 
         private ComboBox deviceBox;
@@ -151,6 +162,7 @@ namespace Ff14Key2Key
             ClientSize = new Size(S(720), S(600));
 
             BuildLayout();
+            BuildTray();
 
             timer.Interval = 50;
             timer.Tick += OnTick;
@@ -211,6 +223,12 @@ namespace Ff14Key2Key
             timer.Stop();
             SystemEvents.SessionEnding -= OnSessionEnding;   // static event: must be removed or it keeps the form alive
             StopEverything();
+            if (tray != null)
+            {
+                tray.Visible = false;   // otherwise the icon stays in the notification area until the mouse passes over it
+                tray.Dispose();
+                tray = null;
+            }
         }
 
         // Ends whatever mode is running (keys released, device closed) and returns to Idle.
@@ -720,7 +738,115 @@ namespace Ff14Key2Key
 
         private void ShowWarning(string text)
         {
+            if (exiting) return;
+            RestoreWindow();   // a message box must not pop up for a window hidden in the tray
             MessageBox.Show(this, text, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        // ------------------------------------------------------------------
+        // Background (system tray)
+        // ------------------------------------------------------------------
+        private void BuildTray()
+        {
+            iconApp = MakeIcon(ColorBusy, 32);
+            int small = Math.Max(16, SystemInformation.SmallIconSize.Width);
+            iconIdle = MakeIcon(ColorIdle, small);
+            iconRun = MakeIcon(ColorRun, small);
+            iconPause = MakeIcon(ColorPause, small);
+            iconBusy = MakeIcon(ColorBusy, small);
+            Icon = iconApp;
+
+            ContextMenuStrip menu = new ContextMenuStrip();
+            menu.Font = Font;
+            trayShowItem = new ToolStripMenuItem("顯示視窗", null, OnTrayShowClick);
+            trayShowItem.Font = new Font(Font, FontStyle.Bold);
+            trayPauseItem = new ToolStripMenuItem("暫停擷取", null, OnTrayPauseClick);
+            trayExitItem = new ToolStripMenuItem("離開", null, OnTrayExitClick);
+            menu.Items.Add(trayShowItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(trayPauseItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(trayExitItem);
+
+            tray = new NotifyIcon();
+            tray.Icon = iconIdle;
+            tray.Text = AppTitle;
+            tray.ContextMenuStrip = menu;
+            tray.DoubleClick += OnTrayShowClick;
+            tray.Visible = true;
+        }
+
+        // A small round status icon with a three-key piano on it, drawn at run time (no icon file needed).
+        // The icon handle is kept for the whole session (only five of them), so it is never destroyed.
+        private static Icon MakeIcon(Color color, int size)
+        {
+            using (Bitmap bmp = new Bitmap(size, size))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.Clear(Color.Transparent);
+                    using (SolidBrush fill = new SolidBrush(color))
+                    {
+                        g.FillEllipse(fill, 0, 0, size - 1, size - 1);
+                    }
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+                    float left = size * 0.22f;
+                    float top = size * 0.26f;
+                    float keyW = (size - 2 * left) / 3f;
+                    float keyH = size * 0.48f;
+                    for (int i = 0; i < 3; i++)
+                    {
+                        g.FillRectangle(Brushes.White, left + i * keyW + 0.5f, top, keyW - 1f, keyH);
+                    }
+                    float blackW = keyW * 0.55f;
+                    for (int i = 1; i < 3; i++)
+                    {
+                        g.FillRectangle(Brushes.Black, left + i * keyW - blackW / 2f, top, blackW, keyH * 0.6f);
+                    }
+                }
+                return Icon.FromHandle(bmp.GetHicon());
+            }
+        }
+
+        private void OnBackgroundClick(object sender, EventArgs e)
+        {
+            GoBackground();
+        }
+
+        // Hide the window (no taskbar button); mapping and pause state carry on unchanged.
+        private void GoBackground()
+        {
+            Hide();
+            AddLog("已縮到系統匣，程式在背景繼續執行。雙擊右下角的圖示可以叫回視窗。");
+            if (!balloonShown && tray != null)
+            {
+                balloonShown = true;
+                tray.ShowBalloonTip(4000, AppTitle, "程式仍在背景執行。雙擊右下角的圖示可以叫回視窗。", ToolTipIcon.Info);
+            }
+        }
+
+        private void RestoreWindow()
+        {
+            if (IsDisposed) return;
+            if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+        }
+
+        private void OnTrayShowClick(object sender, EventArgs e)
+        {
+            RestoreWindow();
+        }
+
+        private void OnTrayPauseClick(object sender, EventArgs e)
+        {
+            TogglePause();
+        }
+
+        private void OnTrayExitClick(object sender, EventArgs e)
+        {
+            ExitApp();
         }
 
         // ------------------------------------------------------------------
@@ -762,10 +888,6 @@ namespace Ff14Key2Key
         {
         }
 
-        private void OnBackgroundClick(object sender, EventArgs e)
-        {
-        }
-
         private void OnClearClick(object sender, EventArgs e)
         {
             logBox.Clear();
@@ -789,23 +911,62 @@ namespace Ff14Key2Key
             testButton.Enabled = false;
             monitorButton.Enabled = false;
             keymapButton.Enabled = false;
-            backgroundButton.Enabled = false;
+            backgroundButton.Enabled = mode != Mode.Calibrating;
             exitButton.Enabled = true;
 
+            string state;
+            Color color;
+            Icon icon;
             if (paused)
             {
+                state = "已暫停";
                 statusText.Text = "狀態：已暫停（MIDI 訊號不會送到遊戲）";
-                statusText.ForeColor = ColorPause;
+                color = ColorPause;
+                icon = iconPause;
             }
             else if (mapping)
             {
+                state = "映射中";
                 statusText.Text = "狀態：映射中";
-                statusText.ForeColor = ColorRun;
+                color = ColorRun;
+                icon = iconRun;
+            }
+            else if (mode == Mode.Calibrating)
+            {
+                state = "校準中";
+                statusText.Text = "狀態：校準中";
+                color = ColorBusy;
+                icon = iconBusy;
+            }
+            else if (mode == Mode.Testing)
+            {
+                state = "測試音階中";
+                statusText.Text = "狀態：測試音階中";
+                color = ColorBusy;
+                icon = iconBusy;
+            }
+            else if (mode == Mode.Monitoring)
+            {
+                state = "監看中";
+                statusText.Text = "狀態：監看中（不會送出按鍵）";
+                color = ColorBusy;
+                icon = iconBusy;
             }
             else
             {
+                state = "閒置";
                 statusText.Text = "狀態：閒置";
-                statusText.ForeColor = ColorIdle;
+                color = ColorIdle;
+                icon = iconIdle;
+            }
+            statusText.ForeColor = color;
+
+            if (tray != null)
+            {
+                tray.Icon = icon;
+                tray.Text = AppTitle + " - " + state;   // at most 63 characters
+                trayPauseItem.Text = paused ? "繼續擷取" : "暫停擷取";
+                trayPauseItem.Enabled = mapping;
             }
         }
 
