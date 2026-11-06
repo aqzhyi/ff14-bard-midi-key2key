@@ -166,29 +166,116 @@ namespace Ff14Key2Key
 
     // ======================================================================
     // Engine: pure logic, guarded by a lock (MIDI callbacks arrive on another thread).
+    //
+    // Octave follow (optional, on for a calibrated 37-key keyboard): the OCTAVE / TRANSPOSE buttons of a MIDI
+    // keyboard move every key's note number but send no message of their own, so after an accidental press part of
+    // the keyboard falls outside the 37-note window and the rest plays in the wrong octave. A 37-key keyboard always
+    // sends 37 notes in a row, [low, low + 36], so a note outside the window proves that "low" has moved. The engine
+    // keeps the range of "low" values that fit every note seen since the last move, and when a note falls outside
+    // the current window it picks a new "low" in that range: a whole number of octaves from the calibrated base when
+    // possible (the OCTAVE buttons), otherwise the nearest value (TRANSPOSE). Held keys are released on a move:
+    // FF14 sounds one note at a time, and it guarantees that no key stays down because of the move.
     // ======================================================================
     internal sealed class Engine
     {
+        public const int MaxLow = 127 - (Keymap.KeyCount - 1);   // highest "low" that keeps the window inside MIDI 0..127
+
         private readonly object sync = new object();
         private readonly IKeySink sink;
         private readonly bool[] down = new bool[Keymap.KeyCount];
+        private readonly int[] heldBy = new int[16 * 128];   // offset each (channel, note) pressed, -1 = none
         private readonly HashSet<int> hintSeen = new HashSet<int>();
         private readonly List<int> pendingHints = new List<int>();
+        private readonly List<int> pendingMoves = new List<int>();
         private readonly int baseNote;
         private readonly int channel;
+        private bool follow;
+        private int low;        // note of the leftmost key right now (== baseNote until the keyboard is shifted)
+        private int fitLow;     // every note since the last move fits a window starting anywhere in fitLow..fitHigh
+        private int fitHigh;
         private bool closed;
         private bool paused;
 
-        public Engine(IKeySink sink, int baseNote, int channel)
+        public Engine(IKeySink sink, int baseNote, int channel) : this(sink, baseNote, channel, false)
+        {
+        }
+
+        public Engine(IKeySink sink, int baseNote, int channel, bool followOctave)
         {
             this.sink = sink;
             this.baseNote = baseNote;
             this.channel = channel;
+            this.follow = followOctave && baseNote >= 0 && baseNote <= MaxLow;
+            low = baseNote;
+            fitLow = baseNote;
+            fitHigh = baseNote;
+            for (int i = 0; i < heldBy.Length; i++) heldBy[i] = -1;
         }
 
+        // The calibrated base note.
         public int BaseNote
         {
             get { return baseNote; }
+        }
+
+        // The note of the leftmost key right now: BaseNote, or where octave follow has moved it.
+        public int CurrentLow
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return low;
+                }
+            }
+        }
+
+        public bool FollowOctave
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return follow;
+                }
+            }
+        }
+
+        // Switch octave follow while running. Off = back to the calibrated base, with every key released if it moves.
+        public void SetFollowOctave(bool on)
+        {
+            lock (sync)
+            {
+                follow = on && baseNote >= 0 && baseNote <= MaxLow;
+                if (!follow && low != baseNote)
+                {
+                    ReleaseAllLocked();
+                    low = baseNote;
+                    pendingMoves.Add(baseNote);
+                }
+                fitLow = low;
+                fitHigh = low;
+            }
+        }
+
+        // Offset 0..36 that a note maps to right now, or -1 (for display only: the key lamps of the window version).
+        public int OffsetNow(int note)
+        {
+            lock (sync)
+            {
+                return Keymap.OffsetForNote(note, low);
+            }
+        }
+
+        // New "low" notes chosen by octave follow since the last call, oldest first.
+        public int[] DrainMoves()
+        {
+            lock (sync)
+            {
+                int[] result = pendingMoves.ToArray();
+                pendingMoves.Clear();
+                return result;
+            }
         }
 
         public void HandleRaw(uint raw)
@@ -206,10 +293,10 @@ namespace Ff14Key2Key
                 switch (m.Kind)
                 {
                     case MidiKind.NoteOn:
-                        NoteOnLocked(m.Data1);
+                        NoteOnLocked(m.Channel, m.Data1);
                         break;
                     case MidiKind.NoteOff:
-                        NoteOffLocked(m.Data1);
+                        NoteOffLocked(m.Channel, m.Data1);
                         break;
                     case MidiKind.AllNotesOff:
                         ReleaseAllLocked();
@@ -291,22 +378,76 @@ namespace Ff14Key2Key
             }
         }
 
-        private void NoteOnLocked(int note)
+        private static int HeldIndex(int channel, int note)
         {
-            int off = Keymap.OffsetForNote(note, baseNote);
+            if (channel < 1 || channel > 16 || note < 0 || note > 127) return -1;
+            return (channel - 1) * 128 + note;
+        }
+
+        private void NoteOnLocked(int ch, int note)
+        {
+            int idx = HeldIndex(ch, note);
+            if (idx < 0) return;
+            if (follow) FollowLocked(note);
+            int off = Keymap.OffsetForNote(note, low);
             if (off < 0)
             {
                 if (hintSeen.Add(note)) pendingHints.Add(note);
                 return;
             }
             PressLocked(off);
+            if (down[off]) heldBy[idx] = off;
         }
 
-        private void NoteOffLocked(int note)
+        // A Note Off releases exactly the key its own Note On pressed (even if the keyboard was shifted in between),
+        // and nothing at all when that key was already released (pause, All Notes Off, an octave move...).
+        private void NoteOffLocked(int ch, int note)
         {
-            int off = Keymap.OffsetForNote(note, baseNote);
+            int idx = HeldIndex(ch, note);
+            if (idx < 0) return;
+            int off = heldBy[idx];
             if (off < 0) return;
+            heldBy[idx] = -1;
             ReleaseLocked(off);   // does nothing when the key is not down (never a stray key-up)
+        }
+
+        // Octave follow: keep [fitLow, fitHigh] = every "low" that fits all notes since the last move, and move
+        // "low" only when this note does not fit the current window.
+        private void FollowLocked(int note)
+        {
+            int lo = Math.Max(fitLow, note - (Keymap.KeyCount - 1));
+            int hi = Math.Min(fitHigh, note);
+            if (lo > hi)
+            {
+                // No single window holds this note and the earlier ones: the keyboard was shifted since then.
+                lo = note - (Keymap.KeyCount - 1);
+                hi = note;
+            }
+            if (lo < 0) lo = 0;
+            if (hi > MaxLow) hi = MaxLow;
+            fitLow = lo;
+            fitHigh = hi;
+            if (low >= lo && low <= hi) return;
+            int next = PickLow(lo, hi, low, baseNote);
+            ReleaseAllLocked();
+            low = next;
+            pendingMoves.Add(next);
+        }
+
+        // A value in lo..hi: whole octaves away from the calibrated base when possible (OCTAVE buttons), the one
+        // nearest the current low; otherwise (TRANSPOSE) the value in lo..hi nearest the current low.
+        internal static int PickLow(int lo, int hi, int current, int calibrated)
+        {
+            int best = -1;
+            for (int v = lo; v <= hi; v++)
+            {
+                if (((v - calibrated) % 12 + 12) % 12 != 0) continue;
+                if (best < 0 || Math.Abs(v - current) < Math.Abs(best - current)) best = v;
+            }
+            if (best >= 0) return best;
+            if (current < lo) return lo;
+            if (current > hi) return hi;
+            return current;
         }
 
         // Note On: when already down, release first so FF14 re-triggers the note.
@@ -337,6 +478,10 @@ namespace Ff14Key2Key
             for (int i = 0; i < down.Length; i++)
             {
                 ReleaseLocked(i);
+            }
+            for (int i = 0; i < heldBy.Length; i++)
+            {
+                heldBy[i] = -1;
             }
         }
     }
@@ -556,6 +701,7 @@ namespace Ff14Key2Key
         public string Device = "";
         public int Channel = 0;
         public int ChordSpreadMs = 0;
+        public bool FollowOctave = true;
 
         public static Config Load(string path)
         {
@@ -571,6 +717,13 @@ namespace Ff14Key2Key
                 // unreadable file -> defaults
             }
             return new Config();
+        }
+
+        // Octave follow is only safe on a keyboard with exactly 37 keys: on a bigger one, notes outside the window
+        // are normal and must not move it. Calibration measures the keyboard and decides.
+        public static bool FollowFor(int lowest, int highest)
+        {
+            return highest - lowest == Keymap.KeyCount - 1 && lowest >= 0 && lowest <= Engine.MaxLow;
         }
 
         public static Config Parse(string[] lines)
@@ -604,6 +757,10 @@ namespace Ff14Key2Key
                 {
                     if (TryParseInt(val, out n) && n >= 0 && n <= ChordSpreader.MaxSpreadMs) c.ChordSpreadMs = n;
                 }
+                else if (key == "follow_octave")
+                {
+                    if (TryParseInt(val, out n) && (n == 0 || n == 1)) c.FollowOctave = (n == 1);
+                }
                 // unknown keys are ignored
             }
             return c;
@@ -635,6 +792,10 @@ namespace Ff14Key2Key
             sb.Append("# chord_spread_ms：和弦錯開（毫秒）。FF14 一次只能發一個音，同時按下的鍵通常只會響一個。\r\n");
             sb.Append("# 設成 10~200：同時按下的音會由低到高、每個間隔這麼多毫秒送出（最後持續的是最高音）。0 = 關閉。\r\n");
             sb.Append("chord_spread_ms=").Append(ChordSpreadMs.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
+            sb.Append("\r\n");
+            sb.Append("# follow_octave：自動跟隨八度。1 = 開啟：不小心按到鍵盤的 Octave / Transpose 按鈕時，程式會自動重新對齊，\r\n");
+            sb.Append("# 不用重新校準。0 = 關閉（鍵盤不是 37 鍵時請用 0；校準時會自動設定）。\r\n");
+            sb.Append("follow_octave=").Append(FollowOctave ? "1" : "0").Append("\r\n");
             return sb.ToString();
         }
 
@@ -2182,6 +2343,7 @@ namespace Ff14Key2Key
                     }
 
                     cfg.BaseNote = low;
+                    cfg.FollowOctave = Config.FollowFor(low, high);
                     try
                     {
                         cfg.Save(ConfigPath());
@@ -2197,7 +2359,7 @@ namespace Ff14Key2Key
                     Console.WriteLine("  最低音 = MIDI {0} ({1})", low, Keymap.NoteName(low));
                     Console.WriteLine("  FF14 的 37 個音對應 MIDI {0} ({1}) ~ {2} ({3})",
                         low, Keymap.NoteName(low), low + 36, Keymap.NoteName(low + 36));
-                    Console.WriteLine("提醒：鍵盤上的 Octave / Transpose 請保持在原本的設定，校準後不要再改。");
+                    Console.WriteLine(FollowText(cfg.FollowOctave));
                     return RcOk;
                 }
             }
@@ -2498,13 +2660,13 @@ namespace Ff14Key2Key
 
             int baseNote = (opt.BaseNote >= 0) ? opt.BaseNote : cfg.BaseNote;
             int channel = (opt.Channel >= 0) ? opt.Channel : cfg.Channel;
-            return RunMapping(dev, baseNote, channel, cfg.ChordSpreadMs, opt.Verbose);
+            return RunMapping(dev, baseNote, channel, cfg.ChordSpreadMs, cfg.FollowOctave, opt.Verbose);
         }
 
-        private static int RunMapping(MidiDeviceInfo dev, int baseNote, int channel, int spreadMs, bool verbose)
+        private static int RunMapping(MidiDeviceInfo dev, int baseNote, int channel, int spreadMs, bool follow, bool verbose)
         {
             Ff14PostSink sink = new Ff14PostSink();
-            Engine engine = new Engine(sink, baseNote, channel);
+            Engine engine = new Engine(sink, baseNote, channel, follow);
             ChordSpreader spreader = new ChordSpreader(engine, spreadMs);
             LogQueue log = new LogQueue();
             MidiIn midi = null;
@@ -2518,7 +2680,7 @@ namespace Ff14Key2Key
                     MidiMessage msg = MidiMessage.Parse(raw);
                     if (verbose)
                     {
-                        string line = Describe(msg, baseNote, channel);
+                        string line = Describe(msg, engine.CurrentLow, channel);
                         if (line != null) log.Add(line);
                     }
                     spreader.Handle(msg);
@@ -2543,7 +2705,7 @@ namespace Ff14Key2Key
                 }
 
                 bool linked = sink.Poll();
-                PrintRunHeader(dev, baseNote, channel, spreadMs, linked);
+                PrintRunHeader(dev, baseNote, channel, spreadMs, engine.FollowOctave, linked);
                 while (!StopEvent.WaitOne(50))
                 {
                     bool nowLinked = sink.Poll();
@@ -2579,7 +2741,7 @@ namespace Ff14Key2Key
             return rc;
         }
 
-        private static void PrintRunHeader(MidiDeviceInfo dev, int baseNote, int channel, int spreadMs, bool linked)
+        private static void PrintRunHeader(MidiDeviceInfo dev, int baseNote, int channel, int spreadMs, bool follow, bool linked)
         {
             Console.WriteLine("==========================================");
             Console.WriteLine("  映射中：MIDI 鍵盤 → FF14 按鍵");
@@ -2591,6 +2753,7 @@ namespace Ff14Key2Key
             Console.WriteLine("  和弦錯開：{0}", spreadMs > 0
                 ? spreadMs.ToString() + " 毫秒（同時按下的音由低到高錯開送出）"
                 : "關閉（FF14 一次只能發一個音；可在 config.txt 設定 chord_spread_ms）");
+            Console.WriteLine("  " + FollowText(follow));
             Console.WriteLine();
             Console.WriteLine("  按鍵會直接送到 FF14 視窗，不管目前是哪個視窗在前景（實體鍵盤不受影響）。");
             if (linked)
@@ -2640,6 +2803,11 @@ namespace Ff14Key2Key
                 {
                     Console.WriteLine(HintText(hints[i], engine.BaseNote));
                 }
+                int[] moves = engine.DrainMoves();
+                for (int i = 0; i < moves.Length; i++)
+                {
+                    Console.WriteLine(MoveText(moves[i], engine.BaseNote));
+                }
             }
             string err = midi.TakeCallbackError();
             if (err != null)
@@ -2655,6 +2823,35 @@ namespace Ff14Key2Key
                 "提示：收到音符 {0} ({1})，超出 FF14 的 37 個音（目前有效範圍 MIDI {2} ~ {3}），已忽略。" +
                 "如果這是你最左邊的琴鍵，請用選單的「校準最低音」重新校準；也可以檢查鍵盤上的 Octave（八度）按鈕。",
                 note, Keymap.NoteName(note), baseNote, baseNote + 36);
+        }
+
+        internal static string FollowText(bool follow)
+        {
+            return follow
+                ? "自動跟隨八度：開啟（不小心按到鍵盤的 Octave / Transpose 按鈕時，彈到超出範圍的音就會自動重新對齊）"
+                : "自動跟隨八度：關閉（鍵盤上的 Octave / Transpose 請保持在校準時的設定）";
+        }
+
+        // One line for the log when octave follow moved the window. low = the leftmost key's note now.
+        internal static string MoveText(int low, int baseNote)
+        {
+            int d = low - baseNote;
+            string how;
+            if (d == 0)
+            {
+                how = "回到校準時的位置";
+            }
+            else if (d % 12 == 0)
+            {
+                how = string.Format("比校準時{0} {1} 個八度（可能按到了 Octave 按鈕）", d > 0 ? "高" : "低", Math.Abs(d) / 12);
+            }
+            else
+            {
+                how = string.Format("比校準時{0} {1} 個半音（可能按到了 Transpose 按鈕）", d > 0 ? "高" : "低", Math.Abs(d));
+            }
+            return string.Format("自動跟隨八度：鍵盤的音高移動了，已重新對齊。現在最左邊的琴鍵 = MIDI {0} ({1})，{2}。" +
+                "不需要重新校準（MIDIPLUS X mini 系列：兩顆 OCTAVE 按鈕同時按下可以回到原位）。",
+                low, Keymap.NoteName(low), how);
         }
     }
 }

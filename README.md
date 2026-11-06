@@ -16,6 +16,7 @@ The tool works with a USB MIDI keyboard that has 37 keys. The author uses a MIDI
 - **It works when the game is not in front.** The key messages go straight to the FF14 window. You can use your browser while you play. Your normal keyboard still works as usual.
 - **The first run helps you set up.** You do not need to know MIDI note numbers.
 - **There is a window version.** You use every function with buttons. One button pauses and resumes. The program can also hide in the system tray and keep running. The console version is still there too.
+- **It follows the octave buttons.** If you press OCTAVE or TRANSPOSE on the keyboard by mistake, the program moves with it. You do not need to calibrate again.
 - **Other buttons do not stop it.** The other buttons, knobs and touch strips of the keyboard (for example Play and Stop buttons, which send SysEx) do not press any key, and they cannot stop the mapping.
 - **You do not need to install anything.** It uses the C# compiler that is already in Windows. Double-click `build.bat` to make the program.
 
@@ -79,6 +80,7 @@ The buttons of the **window version** (the words in the program are Chinese):
 | MIDI device (MIDI 裝置) / Refresh (重新整理) | Choose your MIDI keyboard. After you plug a keyboard in or out, click Refresh |
 | Start mapping (▶ 開始映射) / Stop mapping (■ 停止映射) | Start or stop changing MIDI keys into computer keys. Stop also closes the MIDI device, so other programs can use it |
 | Pause (Ⅱ 暫停擷取) / Resume (▶ 繼續擷取) | While mapping, stop sending keys to the game for a while. Held keys are let go at once. Click again to resume at once |
+| Octave follow (自動跟隨八度) checkbox | Follow the OCTAVE and TRANSPOSE buttons of the keyboard. On by default. You can change it while mapping. Untick it if your keyboard does not have 37 keys. See step 4 |
 | Calibrate (校準最低音) | Set again which MIDI note is the far left key |
 | Test scale (測試音階) | The program presses all 37 keys by itself. Use it to check the keys in the game. You do not need a MIDI keyboard |
 | Monitor MIDI (監看 MIDI) | It shows every MIDI message it gets: notes, and also other buttons and knobs (CC, Program Change, Pitch Bend, SysEx such as MMC Play or Stop, and so on). Other messages are marked 「（不影響按鍵）」 (does not press a key). It does **not** press any key. Use it to find problems |
@@ -107,9 +109,17 @@ The first time you click "Start mapping" (in the console version: choose `1`), t
 1. Press the **lowest** key (the far left key) on your keyboard.
 2. Press the **highest** key (the far right key).
 
-The two keys must be exactly 36 semitones apart (a 37-key keyboard). The program checks this. The result is saved in `config.txt` next to the exe. You do not need to do it again. After this, do not change the Octave or Transpose buttons on your keyboard.
+The two keys must be exactly 36 semitones apart (a 37-key keyboard). The program checks this. The result is saved in `config.txt` next to the exe. You do not need to do it again.
 
-If your keyboard does not have 37 keys: press the key you want to use as the lowest C of FF14. Then press the key that is 36 semitones higher.
+The OCTAVE and TRANSPOSE buttons above the keys of a MIDI keyboard do not send a message. They only change the note number of every key. The program follows this by itself ("octave follow", on by default). When a note outside the 37-note window arrives, the program moves the window to fit it. It prints a line that starts with 「自動跟隨八度：鍵盤的音高移動了，已重新對齊」 and lets go of all held keys. You do not need to calibrate again.
+
+One limit: the program can only see the move when you play a key that is now outside the old range. Right after an accidental press, a few notes may sound one octave off. Play a note near the top or the bottom of the keyboard. After that it is correct.
+
+On MIDIPLUS X mini keyboards, press both OCTAVE buttons together to reset the octave.
+
+The calibration also sets octave follow: if the two keys are not 36 semitones apart, it turns octave follow off.
+
+If your keyboard does not have 37 keys: press the key you want to use as the lowest C of FF14. Then press the key that is 36 semitones higher. Then turn octave follow off yourself (window version: untick 「自動跟隨八度」; console version: set `follow_octave=0` in `config.txt`). If you do not, playing a key outside the 37 notes moves the window.
 
 ### 5. Play
 
@@ -144,6 +154,7 @@ base_note=48   # MIDI note number of the far left key (C3 = 48)
 device=        # Part of the MIDI device name. Empty = choose automatically
 channel=0      # 0 = all channels
 chord_spread_ms=0   # Chord spread in milliseconds. 0 = off, 10 to 200 = on
+follow_octave=1     # 1 = follow the octave buttons (default), 0 = off. Turn off if your keyboard is not 37 keys
 ```
 
 ### Chord spread
@@ -162,8 +173,9 @@ Turn on "chord spread" (window version: tick "和弦錯開" in the main window; 
 - **Nothing happens in the game.** Look at the program window. Does it show "已找到 FF14 視窗" ("FF14 window found")? The program only finds the game itself (`ffxiv_dx11.exe`, window class `FFXIVGAME`). It does not send keys to the launcher or other windows. If it cannot find the game, it shows a list of windows with a title like FF14. Please paste the list in an Issue.
 - **The window is found, but there is no sound.** First run option 3 (test scale). Then check these things: the game is in performance mode, you equipped an instrument, and the keys in the game are the same as the table above.
 - **No MIDI device is found.** Use another USB port. Unplug the keyboard and plug it in again. Close other programs that use MIDI.
-- **The program says "超出範圍" (out of range) when you press a key.** The Octave or Transpose button on the keyboard was changed. Set it back to the setting you used in the calibration, or calibrate again (option 2). If your keyboard has a "smart scale" function, turn it off.
+- **The program says "超出範圍" (out of range) when you press a key.** With octave follow on, this should not happen. If it does, octave follow is off: `follow_octave=0` in `config.txt`, or the keyboard was not calibrated as 37 keys. Turn it on (window version: tick 「自動跟隨八度」), or calibrate again. If your keyboard has a "smart scale" function, turn it off.
 - **After I pressed a small button on the keyboard, no key works any more.** This was a bug in old versions. It is fixed. Please use the newest version. Many keyboards send SysEx from their buttons. For example, the 6 buttons of the MIDIPLUS X mini series send MMC transport commands (Play, Stop and so on). With the new MIDI system of Windows 11 (Windows MIDI Services), the old program stopped getting all MIDI input after a SysEx came in. You had to restart it. The new version gets buffers ready for SysEx first, so these buttons have no effect now. Monitor MIDI also shows the SysEx they send.
+- **After I pressed a small button on the keyboard, the notes are wrong (there is sound, but wrong notes, or some keys do nothing).** The OCTAVE or TRANSPOSE button moved the note numbers. Octave follow (see step 4) fixes this by itself. But the program can only notice it when you play a key outside the old range. So a few notes may be one octave off at first. Play a note near the top or bottom of the keyboard, and it is correct. On MIDIPLUS X mini keyboards, press both OCTAVE buttons together to reset the octave. To see what a button sends, use Monitor MIDI. Also on the X mini series: while you hold SHIFT, the keys become setting keys and the keyboard sends no notes. Release SHIFT. To reset the keyboard to factory settings: unplug it, hold buttons 1 and 2, plug in the USB cable, and release after about 3 seconds.
 - **The test scale is right, but your playing has wrong notes.** Calibrate again.
 - **Zhuyin symbols appear when you press keys.** Change your input method to English mode.
 - **You press several keys together, but the game plays only one.** This is a limit of FF14 (one note at a time). The program is not broken. You can turn on "Chord spread" (see above). This is also why you usually hear only one note in the "C major chord" at the end of the test scale.

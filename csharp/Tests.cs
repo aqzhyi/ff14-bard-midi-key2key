@@ -207,6 +207,7 @@ namespace Ff14Key2Key
             RegisterConfig();
             RegisterOptions();
             RegisterThreads();
+            RegisterFollow();
             RegisterMore();
             RegisterSysex();
 
@@ -931,9 +932,259 @@ namespace Ff14Key2Key
             });
         }
 
+        // ------------------------------------------------------------------ octave follow
+        private static Engine FollowEngine(FakeSink s)
+        {
+            return new Engine(s, Base, 0, true);
+        }
+
+        private static int Downs(List<string> ev)
+        {
+            int n = 0;
+            for (int i = 0; i < ev.Count; i++) if (ev[i].StartsWith("down ")) n++;
+            return n;
+        }
+
+        private static void RegisterFollow()
+        {
+            Add("Follow: 3-arg constructor has follow off, out-of-range gives hint and no key", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = new Engine(s, Base, 0);
+                Assert.True(!e.FollowOctave, "FollowOctave");
+                e.Handle(On(90));
+                Assert.Equal(0, s.Count, "events");
+                Assert.Seq(L(90), L<int>(e.DrainHints()), "hints");
+                Assert.Equal(0, e.DrainMoves().Length, "moves");
+                Assert.Equal(48, e.CurrentLow, "CurrentLow");
+            });
+            Add("Follow: keyboard shifted +12 moves low to 60", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                Assert.True(e.FollowOctave, "FollowOctave");
+                e.Handle(On(90));
+                Assert.Equal(60, e.CurrentLow, "CurrentLow");
+                Assert.Seq(L(60), L<int>(e.DrainMoves()), "moves");
+                Assert.Seq(L(Down(30)), s.Events(), "events");
+                e.Handle(Off(90));
+                e.Handle(On(60));
+                Assert.Seq(L(Down(30), Up(30), Down(0)), s.Events(), "events after 60");
+                Assert.Equal(0, e.OffsetNow(60), "OffsetNow(60)");
+                Assert.Equal(-1, e.OffsetNow(48), "OffsetNow(48)");
+            });
+            Add("Follow: +24 in two steps, then back down to 48", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                e.Handle(On(90));
+                Assert.Equal(60, e.CurrentLow, "after 90");
+                e.Handle(On(100));
+                Assert.Equal(72, e.CurrentLow, "after 100");
+                e.Handle(On(50));
+                Assert.Equal(48, e.CurrentLow, "after 50");
+                Assert.Seq(L(60, 72, 48), L<int>(e.DrainMoves()), "moves");
+                Assert.Equal(2, e.OffsetNow(50), "OffsetNow(50)");
+                Assert.Equal(3, Downs(s.Events()), "one key-down per note on");
+            });
+            Add("Follow: no hints while follow is on", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                int[] notes = new int[] { 0, 127, 90, 10, 60 };
+                for (int i = 0; i < notes.Length; i++) e.Handle(On(notes[i]));
+                Assert.Equal(0, e.DrainHints().Length, "hints");
+                Assert.Equal(notes.Length, Downs(s.Events()), "key-downs");
+            });
+            Add("Follow: a move releases held keys before the new key-down", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                e.Handle(On(48));
+                e.Handle(On(52));
+                e.Handle(On(90));
+                Assert.Seq(L(Down(0), Down(4), Up(0), Up(4), Down(30)), s.Events(), "events");
+            });
+            Add("Follow: note off of a key held before the move sends nothing and spares later keys", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                e.Handle(On(50));           // offset 2 (low 48)
+                e.Handle(On(90));           // move to 60, releases offset 2
+                e.Handle(On(62));           // offset 2 again, new key
+                List<string> before = s.Events();
+                e.Handle(Off(50));
+                Assert.Seq(before, s.Events(), "Off(50) must send nothing");
+                e.Handle(Off(62));
+                Assert.Seq(L(Down(2), Up(2), Down(30), Down(2), Up(2)), s.Events(), "events");
+            });
+            Add("Follow: note off releases the key its own note on pressed", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                e.Handle(On(50));
+                e.Handle(Off(50));
+                Assert.Seq(L(Down(2), Up(2)), s.Events(), "without a move");
+                e.Handle(On(50));
+                e.Handle(On(90));
+                s.Clear();
+                e.Handle(Off(50));
+                Assert.Equal(0, s.Count, "after a move");
+            });
+            Add("Follow: transpose +1 ends at 49", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                e.Handle(On(85));
+                e.Handle(On(49));
+                Assert.Equal(49, e.CurrentLow, "CurrentLow");
+                Assert.Equal(2, Downs(s.Events()), "key-downs");
+                Assert.Equal(0, e.DrainHints().Length, "hints");
+            });
+            Add("Follow: notes 127 and 0 keep low within 0..MaxLow", delegate
+            {
+                Assert.Equal(91, Engine.MaxLow, "MaxLow");
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                e.Handle(On(127));
+                Assert.True(e.CurrentLow >= 0 && e.CurrentLow <= Engine.MaxLow, "low after 127: " + e.CurrentLow);
+                Assert.Equal(36, e.OffsetNow(127), "127 is the top key");
+                e.Handle(On(0));
+                Assert.True(e.CurrentLow >= 0 && e.CurrentLow <= Engine.MaxLow, "low after 0: " + e.CurrentLow);
+                Assert.Equal(0, e.OffsetNow(0), "0 is the bottom key");
+                Assert.Equal(2, Downs(s.Events()), "key-downs");
+                Assert.Equal(0, e.DrainHints().Length, "hints");
+            });
+            Add("Follow: sweeping every note keeps low in range", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                for (int n = 0; n < 128; n++)
+                {
+                    e.Handle(On(n));
+                    Assert.True(e.CurrentLow >= 0 && e.CurrentLow <= Engine.MaxLow, "low " + e.CurrentLow + " after note " + n);
+                    Assert.True(e.OffsetNow(n) >= 0, "note " + n + " has no key");
+                }
+                for (int n = 127; n >= 0; n--)
+                {
+                    e.Handle(On(n));
+                    Assert.True(e.CurrentLow >= 0 && e.CurrentLow <= Engine.MaxLow, "low " + e.CurrentLow + " after note " + n);
+                    Assert.True(e.OffsetNow(n) >= 0, "note " + n + " has no key");
+                }
+                Assert.Equal(0, e.DrainHints().Length, "hints");
+            });
+            Add("Follow: refused when baseNote > MaxLow", delegate
+            {
+                Assert.True(!new Engine(new FakeSink(), 92, 0, true).FollowOctave, "base 92");
+                Assert.True(new Engine(new FakeSink(), 91, 0, true).FollowOctave, "base 91");
+                Assert.True(!new Engine(new FakeSink(), 92, 0).FollowOctave, "base 92 3-arg");
+                Engine e = new Engine(new FakeSink(), 40, 0);
+                e.SetFollowOctave(true);
+                Assert.True(e.FollowOctave, "SetFollowOctave(true) at base 40");
+                Engine f = new Engine(new FakeSink(), 100, 0);
+                f.SetFollowOctave(true);
+                Assert.True(!f.FollowOctave, "SetFollowOctave(true) at base 100");
+            });
+            Add("Follow: SetFollowOctave(false) snaps back to base and releases keys", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                e.Handle(On(90));
+                e.DrainMoves();
+                e.SetFollowOctave(false);
+                Assert.True(!e.FollowOctave, "FollowOctave");
+                Assert.Equal(48, e.CurrentLow, "CurrentLow");
+                Assert.Seq(L(Down(30), Up(30)), s.Events(), "events");
+                Assert.Seq(L(48), L<int>(e.DrainMoves()), "moves");
+                e.Handle(On(90));
+                Assert.Equal(2, s.Count, "no key when follow is off");
+                Assert.Seq(L(90), L<int>(e.DrainHints()), "hint again");
+            });
+            Add("Follow: SetFollowOctave(true) starts following", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = new Engine(s, Base, 0);
+                e.SetFollowOctave(true);
+                Assert.True(e.FollowOctave, "FollowOctave");
+                e.Handle(On(90));
+                Assert.Equal(60, e.CurrentLow, "CurrentLow");
+            });
+            Add("Engine.PickLow table", delegate
+            {
+                Assert.Equal(60, Engine.PickLow(52, 88, 48, 48), "(52,88,48,48)");
+                Assert.Equal(49, Engine.PickLow(49, 49, 60, 48), "(49,49,60,48)");
+                Assert.Equal(57, Engine.PickLow(53, 57, 60, 48), "(53,57,60,48)");
+                Assert.Equal(0, Engine.PickLow(0, 10, 48, 48), "(0,10,48,48)");
+                // tie: 60 and 72 are equally far from 66; the lower one wins
+                Assert.Equal(60, Engine.PickLow(56, 76, 66, 48), "tie (56,76,66,48)");
+                // no octave multiple in range and current inside it: stay
+                Assert.Equal(50, Engine.PickLow(49, 51, 50, 48), "current inside, no octave");
+            });
+            Add("Threads: follow on, random notes 0..127, ReleaseAll leaves nothing down", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = FollowEngine(s);
+                int threadCount = 8;
+                Thread[] threads = new Thread[threadCount];
+                for (int t = 0; t < threadCount; t++)
+                {
+                    int seed = 100 + t;
+                    threads[t] = new Thread(delegate()
+                    {
+                        Random r = new Random(seed);
+                        for (int i = 0; i < 3000; i++)
+                        {
+                            int note = r.Next(128);
+                            int k = r.Next(100);
+                            if (k < 50) e.Handle(On(note));
+                            else if (k < 97) e.Handle(Off(note));
+                            else e.Handle(AllOff());
+                        }
+                    });
+                    threads[t].Start();
+                }
+                for (int t = 0; t < threadCount; t++) threads[t].Join();
+                e.ReleaseAll();
+                List<string> ev = s.Events();
+                Assert.True(ev.Count > 0, "no events");
+                CheckBalanced(ev, true);
+                Assert.True(e.CurrentLow >= 0 && e.CurrentLow <= Engine.MaxLow, "low " + e.CurrentLow);
+            });
+        }
+
         // ------------------------------------------------------------------ config follow / Program texts
         private static void RegisterMore()
         {
+            Add("Config: follow_octave default true", delegate
+            {
+                Assert.True(Config.Parse(new string[0]).FollowOctave, "default");
+            });
+            Add("Config: follow_octave 0 / 1 / invalid", delegate
+            {
+                Assert.True(!Config.Parse(new string[] { "follow_octave=0" }).FollowOctave, "0");
+                Assert.True(Config.Parse(new string[] { "follow_octave=1" }).FollowOctave, "1");
+                Assert.True(Config.Parse(new string[] { "follow_octave=2" }).FollowOctave, "2 ignored");
+                Assert.True(Config.Parse(new string[] { "follow_octave=abc" }).FollowOctave, "abc ignored");
+                Assert.True(!Config.Parse(new string[] { "follow_octave=0", "follow_octave=2" }).FollowOctave, "later invalid keeps 0");
+                Assert.True(!Config.Parse(new string[] { "FOLLOW_OCTAVE = 0 # off" }).FollowOctave, "case and comment");
+            });
+            Add("Config: follow_octave serialize round trip", delegate
+            {
+                Config c = new Config();
+                c.FollowOctave = false;
+                Assert.True(!Config.Parse(SplitLines(c.Serialize())).FollowOctave, "false");
+                c.FollowOctave = true;
+                Assert.True(Config.Parse(SplitLines(c.Serialize())).FollowOctave, "true");
+            });
+            Add("Config.FollowFor", delegate
+            {
+                Assert.True(Config.FollowFor(48, 84), "48..84");
+                Assert.True(!Config.FollowFor(48, 96), "48..96");
+                Assert.True(!Config.FollowFor(100, 136), "100..136");
+                Assert.True(Config.FollowFor(91, 127), "91..127");
+                Assert.True(!Config.FollowFor(92, 128), "92..128");
+                Assert.True(Config.FollowFor(0, 36), "0..36");
+            });
             Add("MidiMessage.Parse sets Status", delegate
             {
                 Assert.Equal(0x93, MidiMessage.Parse(Raw(0x93, 60, 100)).Status, "93");
@@ -969,6 +1220,15 @@ namespace Ff14Key2Key
                 Assert.True(s.Contains("NoteOn") && s.Contains("offset 0") && s.Contains("key A"), "got: " + s);
                 string t = Program.Describe(MidiMessage.Parse(Raw(0x90, 49, 100)), 48, 0);
                 Assert.True(t.Contains("offset 1") && t.Contains("key -"), "got: " + t);
+            });
+            Add("Program.MoveText", delegate
+            {
+                string back = Program.MoveText(48, 48);
+                Assert.True(back.Contains("回到校準時的位置"), "back to base: " + back);
+                string oct = Program.MoveText(60, 48);
+                Assert.True(oct.Contains("八度"), "octave: " + oct);
+                string semi = Program.MoveText(49, 48);
+                Assert.True(semi.Contains("半音"), "semitone: " + semi);
             });
         }
 

@@ -181,6 +181,7 @@ namespace Ff14Key2Key
         private CheckBox spreadCheck;
         private NumericUpDown spreadValue;
         private bool loadingSpread;
+        private CheckBox followCheck;
         private KeyboardView keyboard;
         private TextBox logBox;
         private Button clearButton;
@@ -400,6 +401,18 @@ namespace Ff14Key2Key
             spreadHint.Margin = new Padding(S(3), S(6), S(3), S(3));
             AddRow(root, MakeFlow(spreadCheck, spreadValue, spreadUnit, spreadHint), SizeType.AutoSize);
 
+            // Octave follow (the keyboard's OCTAVE / TRANSPOSE buttons)
+            followCheck = new CheckBox();
+            followCheck.Text = "自動跟隨八度";
+            followCheck.AutoSize = true;
+            followCheck.Checked = true;
+            followCheck.Margin = new Padding(S(6), S(6), 0, S(3));
+            followCheck.CheckedChanged += OnFollowChanged;
+            Label followHint = MakeCaption("不小心按到鍵盤的 Octave / Transpose 按鈕時，自動重新對齊。鍵盤不是 37 鍵時請取消勾選。");
+            followHint.ForeColor = SystemColors.GrayText;
+            followHint.Margin = new Padding(S(3), S(6), S(3), S(3));
+            AddRow(root, MakeFlow(followCheck, followHint), SizeType.AutoSize);
+
             // Other tools
             calibrateButton = MakeButton("校準最低音", OnCalibrateClick);
             testButton = MakeButton("測試音階", OnTestClick);
@@ -560,7 +573,7 @@ namespace Ff14Key2Key
                 return;
             }
             if (m.Kind != MidiKind.NoteOn && m.Kind != MidiKind.NoteOff) return;
-            int off = Keymap.OffsetForNote(m.Data1, baseNote);
+            int off = (eng != null) ? eng.OffsetNow(m.Data1) : Keymap.OffsetForNote(m.Data1, baseNote);
             if (off < 0) return;
             bool on = m.Kind == MidiKind.NoteOn;
             if (on && eng != null && eng.IsPaused) return;
@@ -787,13 +800,15 @@ namespace Ff14Key2Key
             Config cfg = Config.Load(ConfigPath);
             int baseNote = cfg.BaseNote;
             int channel = cfg.Channel;
-            Engine eng = new Engine(sink, baseNote, channel);
+            Engine eng = new Engine(sink, baseNote, channel, followCheck.Checked);
             ChordSpreader spr = new ChordSpreader(eng, CurrentSpreadMs());
             // Runs on the MIDI thread: only the engine here, never the UI.
             MidiShortHandler handler = delegate(uint raw)
             {
                 MidiMessage msg = MidiMessage.Parse(raw);
+                int lowBefore = eng.CurrentLow;
                 spr.Handle(msg);   // keys first, the lamp after
+                if (eng.CurrentLow != lowBefore) keyEvents.AddClear();   // octave follow released every key
                 LampForMessage(msg, baseNote, channel, eng);
             };
             MidiIn m;
@@ -819,6 +834,7 @@ namespace Ff14Key2Key
             AddLog(string.Format("  最低音 MIDI {0} ({1})，頻道：{2}，有效音域 MIDI {0} ({1}) ~ {3} ({4})",
                 baseNote, Keymap.NoteName(baseNote), ChannelText(channel), baseNote + 36, Keymap.NoteName(baseNote + 36)));
             AddLog("  和弦錯開：" + (CurrentSpreadMs() > 0 ? CurrentSpreadMs().ToString() + " 毫秒" : "關閉"));
+            AddLog("  " + Program.FollowText(eng.FollowOctave));
             AddLog("  按鍵會直接送到 FF14 視窗，不管目前是哪個視窗在前景。請讓 FF14 進入演奏模式（視窗不要最小化）。");
             if (!linked)
             {
@@ -846,6 +862,7 @@ namespace Ff14Key2Key
                 spreadCheck.Checked = ms > 0;
                 if (ms > 0) spreadValue.Value = Math.Max((int)spreadValue.Minimum, Math.Min((int)spreadValue.Maximum, ms));
                 spreadValue.Enabled = spreadCheck.Checked;
+                followCheck.Checked = cfg.FollowOctave;
             }
             finally
             {
@@ -878,6 +895,25 @@ namespace Ff14Key2Key
             }
         }
 
+        private void OnFollowChanged(object sender, EventArgs e)
+        {
+            if (loadingSpread) return;
+            bool on = followCheck.Checked;
+            if (engine != null) engine.SetFollowOctave(on);   // takes effect at once, also while mapping
+            AddLog(Program.FollowText(on));
+            if (!File.Exists(ConfigPath)) return;   // saved together with the calibration
+            try
+            {
+                Config cfg = Config.Load(ConfigPath);
+                cfg.FollowOctave = on;
+                cfg.Save(ConfigPath);
+            }
+            catch (Exception ex)
+            {
+                AddLog("無法寫入設定檔：" + ex.Message);
+            }
+        }
+
         // Releases every key, closes the device, back to Idle. message == null: log nothing.
         private void StopMapping(string message)
         {
@@ -902,6 +938,11 @@ namespace Ff14Key2Key
             for (int i = 0; i < hints.Length; i++)
             {
                 AddLog(Program.HintText(hints[i], engine.BaseNote));
+            }
+            int[] moves = engine.DrainMoves();
+            for (int i = 0; i < moves.Length; i++)
+            {
+                AddLog(Program.MoveText(moves[i], engine.BaseNote));
             }
             string err = midi.TakeCallbackError();
             if (err != null) AddLog("警告：處理 MIDI 訊息時發生錯誤：" + err);
@@ -1074,6 +1115,7 @@ namespace Ff14Key2Key
             UpdateUi();
             AddLog("校準最低音：" + dev.Name);
             int low;
+            int high;
             string error;
             DialogResult result;
             try
@@ -1082,6 +1124,7 @@ namespace Ff14Key2Key
                 {
                     result = f.ShowDialog(this);
                     low = f.LowNote;
+                    high = f.HighNote;
                     error = f.Error;
                 }
             }
@@ -1107,6 +1150,8 @@ namespace Ff14Key2Key
             cfg.BaseNote = low;
             cfg.Device = dev.Name;
             cfg.ChordSpreadMs = CurrentSpreadMs();   // config.txt may not exist yet: keep the checkbox setting
+            // A keyboard that is not 37 keys wide turns octave follow off; on a 37-key one the checkbox decides.
+            cfg.FollowOctave = followCheck.Checked && Config.FollowFor(low, high);
             try
             {
                 cfg.Save(ConfigPath);
@@ -1120,7 +1165,19 @@ namespace Ff14Key2Key
             }
             AddLog(string.Format("校準完成，已儲存到 config.txt：最低音 = MIDI {0} ({1})，FF14 的 37 個音對應 MIDI {0} ({1}) ~ {2} ({3})。",
                 low, Keymap.NoteName(low), low + 36, Keymap.NoteName(low + 36)));
-            AddLog("提醒：鍵盤上的 Octave / Transpose 請保持在原本的設定，校準後不要再改。");
+            if (followCheck.Checked != cfg.FollowOctave)
+            {
+                loadingSpread = true;   // already saved: do not save again from the event
+                try
+                {
+                    followCheck.Checked = cfg.FollowOctave;
+                }
+                finally
+                {
+                    loadingSpread = false;
+                }
+            }
+            AddLog(Program.FollowText(cfg.FollowOctave));
             RefreshConfigText();
             return true;
         }
@@ -1695,6 +1752,7 @@ namespace Ff14Key2Key
         private int low = -1;
         private int waited;
         private int lowNote = -1;
+        private int highNote = -1;
         private string error;
 
         public CalibrationForm(MidiDeviceInfo device, int channel, Font font, float scale, Icon icon)
@@ -1736,7 +1794,8 @@ namespace Ff14Key2Key
             note.AutoSize = true;
             note.MaximumSize = new Size(textWidth, 0);
             note.ForeColor = SystemColors.GrayText;
-            note.Text = "鍵盤不是 37 鍵時：第 1 步請按「要當作 FF14 最低音 C」的琴鍵，第 2 步按從它往上數第 36 個半音的琴鍵（高三個八度的 C）。";
+            note.Text = "鍵盤不是 37 鍵時：第 1 步請按「要當作 FF14 最低音 C」的琴鍵，第 2 步按從它往上數第 36 個半音的琴鍵（高三個八度的 C），" +
+                "並在主視窗取消勾選「自動跟隨八度」。";
 
             hintText = new Label();
             hintText.AutoSize = true;
@@ -1774,6 +1833,11 @@ namespace Ff14Key2Key
         public int LowNote
         {
             get { return lowNote; }
+        }
+
+        public int HighNote
+        {
+            get { return highNote; }
         }
 
         public string Error
@@ -1871,6 +1935,7 @@ namespace Ff14Key2Key
             }
             timer.Stop();
             lowNote = low;
+            highNote = high;
             DialogResult = DialogResult.OK;   // closes the dialog
         }
 
