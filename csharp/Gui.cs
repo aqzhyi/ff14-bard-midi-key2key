@@ -14,7 +14,10 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
+using Timer = System.Windows.Forms.Timer;
 
 namespace Ff14Key2Key
 {
@@ -23,9 +26,17 @@ namespace Ff14Key2Key
     // ======================================================================
     internal static class GuiProgram
     {
+        private static MainForm mainForm;
+
         [STAThread]
         private static int Main(string[] args)
         {
+            // Every way out must free the keys first (a key left down keeps sounding in the game).
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += OnThreadException;
+            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+            AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -37,8 +48,37 @@ namespace Ff14Key2Key
                 return 1;
             }
 
-            Application.Run(new MainForm());
+            mainForm = new MainForm();
+            Application.Run(mainForm);
+            MainForm.EmergencyRelease();
             return 0;
+        }
+
+        // An exception on the UI thread: free the keys, stop the current mode, tell the user, keep running.
+        private static void OnThreadException(object sender, ThreadExceptionEventArgs e)
+        {
+            MainForm.EmergencyRelease();
+            MainForm f = mainForm;
+            if (f != null && !f.IsDisposed)
+            {
+                f.RecoverFromError(e.Exception);
+            }
+            else
+            {
+                MessageBox.Show("發生未預期的錯誤：" + e.Exception.Message, "FF14 key2key",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // An exception on another thread ends the process: free the keys while we still can.
+        private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            MainForm.EmergencyRelease();
+        }
+
+        private static void OnProcessExit(object sender, EventArgs e)
+        {
+            MainForm.EmergencyRelease();
         }
     }
 
@@ -76,6 +116,8 @@ namespace Ff14Key2Key
         private MidiIn midi;            // mapping
         private bool linked;
         private bool filling;
+        private bool exiting;
+        private bool shutDown;
         private List<MidiDeviceInfo> devices = new List<MidiDeviceInfo>();
 
         private ComboBox deviceBox;
@@ -114,12 +156,84 @@ namespace Ff14Key2Key
             timer.Tick += OnTick;
             Load += OnFormLoad;
             FormClosing += OnFormClosing;
+            SystemEvents.SessionEnding += OnSessionEnding;
         }
 
+        // ------------------------------------------------------------------
+        // Exit paths
+        // ------------------------------------------------------------------
+
+        // Last-resort key release, callable from any thread (unhandled exception, process exit, logoff).
+        public static void EmergencyRelease()
+        {
+            Engine e = liveEngine;
+            if (e == null) return;
+            try
+            {
+                e.Shutdown();
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void OnSessionEnding(object sender, SessionEndingEventArgs e)
+        {
+            EmergencyRelease();
+        }
+
+        private void OnExitClick(object sender, EventArgs e)
+        {
+            ExitApp();
+        }
+
+        // The exit button and the tray menu's exit: release keys, close the device, remove the tray icon, quit.
+        private void ExitApp()
+        {
+            if (exiting) return;
+            exiting = true;
+            ShutdownAll();
+            Application.Exit();
+        }
+
+        // The window's close button (X) also ends the program.
         private void OnFormClosing(object sender, FormClosingEventArgs e)
         {
+            exiting = true;
+            ShutdownAll();
+        }
+
+        // Idempotent.
+        private void ShutdownAll()
+        {
+            if (shutDown) return;
+            shutDown = true;
             timer.Stop();
+            SystemEvents.SessionEnding -= OnSessionEnding;   // static event: must be removed or it keeps the form alive
+            StopEverything();
+        }
+
+        // Ends whatever mode is running (keys released, device closed) and returns to Idle.
+        private void StopEverything()
+        {
             StopMapping(null);
+        }
+
+        public void RecoverFromError(Exception ex)
+        {
+            try
+            {
+                StopEverything();
+            }
+            catch (Exception)
+            {
+                mode = Mode.Idle;
+            }
+            if (exiting) return;
+            AddLog("發生未預期的錯誤：" + ex.Message + "（已停止目前的動作，所有按鍵都已放開）");
+            MessageBox.Show(this, "發生未預期的錯誤：" + ex.Message + "\r\n\r\n已停止目前的動作，所有按鍵都已放開。",
+                AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            UpdateUi();
         }
 
         // ------------------------------------------------------------------
@@ -652,10 +766,6 @@ namespace Ff14Key2Key
         {
         }
 
-        private void OnExitClick(object sender, EventArgs e)
-        {
-        }
-
         private void OnClearClick(object sender, EventArgs e)
         {
             logBox.Clear();
@@ -680,7 +790,7 @@ namespace Ff14Key2Key
             monitorButton.Enabled = false;
             keymapButton.Enabled = false;
             backgroundButton.Enabled = false;
-            exitButton.Enabled = false;
+            exitButton.Enabled = true;
 
             if (paused)
             {
