@@ -14,6 +14,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -26,10 +27,37 @@ namespace Ff14Key2Key
     // ======================================================================
     internal static class GuiProgram
     {
+        private const string MutexName = "Local\\Ff14Key2Key.Gui.SingleInstance";
+        private static readonly IntPtr HWND_BROADCAST = new IntPtr(0xFFFF);
+
+        // "Show yourself" message for the instance that is already running (also reaches a window hidden in the tray).
+        public static readonly uint ShowMessage = RegisterWindowMessage("Ff14Key2Key.Gui.ShowWindow");
+
         private static MainForm mainForm;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
         [STAThread]
         private static int Main(string[] args)
+        {
+            // Only one window version at a time: two copies would fight over the same MIDI device.
+            bool createdNew;
+            using (Mutex single = new Mutex(true, MutexName, out createdNew))
+            {
+                if (!createdNew)
+                {
+                    if (ShowMessage != 0) PostMessage(HWND_BROADCAST, ShowMessage, IntPtr.Zero, IntPtr.Zero);
+                    return 0;
+                }
+                return Run();
+            }
+        }
+
+        private static int Run()
         {
             // Every way out must free the keys first (a key left down keeps sounding in the game).
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -200,6 +228,18 @@ namespace Ff14Key2Key
         private void OnSessionEnding(object sender, SessionEndingEventArgs e)
         {
             EmergencyRelease();
+        }
+
+        // A second copy was started: show this window instead.
+        protected override void WndProc(ref Message m)
+        {
+            if (GuiProgram.ShowMessage != 0 && m.Msg == (int)GuiProgram.ShowMessage)
+            {
+                RestoreWindow();
+                AddLog("程式已經在執行中，不會再開第二個。");
+                return;
+            }
+            base.WndProc(ref m);
         }
 
         private void OnExitClick(object sender, EventArgs e)
