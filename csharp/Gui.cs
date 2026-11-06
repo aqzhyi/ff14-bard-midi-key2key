@@ -105,6 +105,7 @@ namespace Ff14Key2Key
 
         private readonly Ff14PostSink sink = new Ff14PostSink();     // one sink for the whole session (mapping, test, link lamp)
         private readonly LogQueue pending = new LogQueue();          // lines from other threads, shown by the timer
+        private readonly KeyEventQueue keyEvents = new KeyEventQueue(); // key lamp changes from other threads
         private readonly Timer timer = new Timer();
         private readonly float scale;
 
@@ -148,6 +149,7 @@ namespace Ff14Key2Key
         private Button testButton;
         private Button monitorButton;
         private Button keymapButton;
+        private KeyboardView keyboard;
         private TextBox logBox;
         private Button clearButton;
         private Label statusText;
@@ -339,6 +341,14 @@ namespace Ff14Key2Key
             keymapButton = MakeButton("鍵位對照表", OnKeymapClick);
             AddRow(root, MakeFlow(calibrateButton, testButton, monitorButton, keymapButton), SizeType.AutoSize);
 
+            // 37-key keyboard lamp
+            keyboard = new KeyboardView();
+            keyboard.Dock = DockStyle.Fill;
+            keyboard.Height = S(96);
+            keyboard.Margin = new Padding(S(3), S(8), S(3), S(4));
+            keyboard.Font = new Font(Font.FontFamily, 7.5f);
+            AddRow(root, keyboard, SizeType.AutoSize);
+
             // Log
             TableLayoutPanel logHeader = new TableLayoutPanel();
             logHeader.Dock = DockStyle.Fill;
@@ -458,6 +468,36 @@ namespace Ff14Key2Key
                 if (line == null) break;
                 AddLog(line);
             }
+            for (int i = 0; i < 500; i++)
+            {
+                int ev = keyEvents.TryTake();
+                if (ev == KeyEventQueue.Empty) break;
+                if (ev == KeyEventQueue.ClearAll)
+                {
+                    keyboard.ClearAll();
+                }
+                else
+                {
+                    keyboard.SetKey(ev & 0xFF, (ev & KeyEventQueue.DownFlag) != 0);
+                }
+            }
+        }
+
+        // Key lamp for a MIDI message (any thread). Notes outside the 37 keys or on another channel are not shown.
+        private void LampForMessage(MidiMessage m, int baseNote, int channel, Engine eng)
+        {
+            if (channel != 0 && m.Channel != channel) return;
+            if (m.Kind == MidiKind.AllNotesOff)
+            {
+                keyEvents.AddClear();
+                return;
+            }
+            if (m.Kind != MidiKind.NoteOn && m.Kind != MidiKind.NoteOff) return;
+            int off = Keymap.OffsetForNote(m.Data1, baseNote);
+            if (off < 0) return;
+            bool on = m.Kind == MidiKind.NoteOn;
+            if (on && eng != null && eng.IsPaused) return;
+            keyEvents.Add(off, on);
         }
 
         // ------------------------------------------------------------------
@@ -684,7 +724,9 @@ namespace Ff14Key2Key
             // Runs on the MIDI thread: only the engine here, never the UI.
             MidiShortHandler handler = delegate(uint raw)
             {
-                eng.Handle(MidiMessage.Parse(raw));
+                MidiMessage msg = MidiMessage.Parse(raw);
+                eng.Handle(msg);   // keys first, the lamp after
+                LampForMessage(msg, baseNote, channel, eng);
             };
             MidiIn m;
             try
@@ -1018,16 +1060,22 @@ namespace Ff14Key2Key
                 {
                     pending.Add(string.Format("  偏移 {0,2}  {1,-3}  按鍵 {2}", off, Keymap.NoteName(Keymap.DefaultBase + off), Keymap.Keys[off]));
                     eng.PressOffset(off);
+                    keyEvents.Add(off, true);
                     bool cancelled = stop.WaitOne(hold);
                     eng.ReleaseOffset(off);
+                    keyEvents.Add(off, false);
                     if (cancelled || stop.WaitOne(rest)) return;
                 }
                 pending.Add(string.Format("  C 大調和弦（按鍵 {0} {1} {2} 同時按）", Keymap.Keys[12], Keymap.Keys[16], Keymap.Keys[19]));
                 eng.PressOffset(12);
                 eng.PressOffset(16);
                 eng.PressOffset(19);
+                keyEvents.Add(12, true);
+                keyEvents.Add(16, true);
+                keyEvents.Add(19, true);
                 bool stopChord = stop.WaitOne(800);
                 eng.ReleaseAll();
+                keyEvents.AddClear();
                 if (stopChord) return;
                 result = (sink.Undelivered > before) ? "undelivered" : "ok";
             }
@@ -1124,8 +1172,10 @@ namespace Ff14Key2Key
             // MIDI thread: only the thread-safe log queue.
             MidiShortHandler handler = delegate(uint raw)
             {
-                string line = Program.Describe(MidiMessage.Parse(raw), baseNote, channel);
+                MidiMessage msg = MidiMessage.Parse(raw);
+                string line = Program.Describe(msg, baseNote, channel);
                 if (line != null) log.Add("  " + line);
+                LampForMessage(msg, baseNote, channel, null);
             };
             try
             {
@@ -1250,6 +1300,13 @@ namespace Ff14Key2Key
             backgroundButton.Enabled = mode != Mode.Calibrating;
             exitButton.Enabled = true;
 
+            keyboard.Dimmed = paused;
+            if (paused || mode == Mode.Idle || mode == Mode.Calibrating)
+            {
+                keyEvents.Clear();
+                keyboard.ClearAll();
+            }
+
             string state;
             Color color;
             Icon icon;
@@ -1318,6 +1375,170 @@ namespace Ff14Key2Key
                 logBox.Text = (cut >= 0) ? all.Substring(cut + 1) : "";
             }
             logBox.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + text + "\r\n");
+        }
+    }
+
+    // ======================================================================
+    // Key lamp events from the MIDI / test threads to the UI thread.
+    // Each event: offset 0..36, plus DownFlag for "pressed"; or ClearAll.
+    // ======================================================================
+    internal sealed class KeyEventQueue
+    {
+        public const int Empty = -1;
+        public const int ClearAll = -2;
+        public const int DownFlag = 0x100;
+
+        private readonly object sync = new object();
+        private readonly Queue<int> queue = new Queue<int>();
+
+        public void Add(int offset, bool down)
+        {
+            Push(offset | (down ? DownFlag : 0));
+        }
+
+        public void AddClear()
+        {
+            Push(ClearAll);
+        }
+
+        public int TryTake()
+        {
+            lock (sync)
+            {
+                if (queue.Count > 0) return queue.Dequeue();
+            }
+            return Empty;
+        }
+
+        public void Clear()
+        {
+            lock (sync)
+            {
+                queue.Clear();
+            }
+        }
+
+        private void Push(int ev)
+        {
+            lock (sync)
+            {
+                if (queue.Count < 2000) queue.Enqueue(ev);
+            }
+        }
+    }
+
+    // ======================================================================
+    // 37-key keyboard picture (C3 .. C6): pressed keys light up, grey while paused.
+    // Each key shows its computer key; the C keys also show the note name.
+    // ======================================================================
+    internal sealed class KeyboardView : Control
+    {
+        private const int WhiteCount = 22;   // 3 octaves x 7 + the top C
+        private static readonly int[] WhiteSemitones = new int[] { 0, 2, 4, 5, 7, 9, 11 };
+        private static readonly Color LitWhite = Color.FromArgb(120, 200, 120);
+        private static readonly Color LitBlack = Color.FromArgb(40, 150, 60);
+
+        private readonly bool[] down = new bool[Keymap.KeyCount];
+        private bool dimmed;
+
+        public KeyboardView()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        }
+
+        public bool Dimmed
+        {
+            get { return dimmed; }
+            set
+            {
+                if (dimmed == value) return;
+                dimmed = value;
+                Invalidate();
+            }
+        }
+
+        public void SetKey(int offset, bool on)
+        {
+            if (offset < 0 || offset >= Keymap.KeyCount || down[offset] == on) return;
+            down[offset] = on;
+            Invalidate();
+        }
+
+        public void ClearAll()
+        {
+            bool any = false;
+            for (int i = 0; i < down.Length; i++)
+            {
+                if (down[i]) any = true;
+                down[i] = false;
+            }
+            if (any) Invalidate();
+        }
+
+        private static bool IsBlack(int offset)
+        {
+            int s = offset % 12;
+            return s == 1 || s == 3 || s == 6 || s == 8 || s == 10;
+        }
+
+        // White keys to the left of this key.
+        private static int WhitesBefore(int offset)
+        {
+            int s = offset % 12;
+            int n = 0;
+            for (int i = 0; i < WhiteSemitones.Length; i++)
+            {
+                if (WhiteSemitones[i] < s) n++;
+            }
+            return (offset / 12) * 7 + n;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(BackColor);
+            float ww = (Width - 1) / (float)WhiteCount;
+            float h = Height - 1;
+            float bw = ww * 0.6f;
+            float bh = h * 0.6f;
+            StringFormat center = new StringFormat();
+            center.Alignment = StringAlignment.Center;
+            center.LineAlignment = StringAlignment.Far;
+            try
+            {
+                using (Pen border = new Pen(Color.FromArgb(150, 150, 150)))
+                using (SolidBrush brush = new SolidBrush(Color.White))
+                using (SolidBrush text = new SolidBrush(Color.FromArgb(110, 110, 110)))
+                {
+                    for (int off = 0; off < Keymap.KeyCount; off++)
+                    {
+                        if (IsBlack(off)) continue;
+                        RectangleF r = new RectangleF(WhitesBefore(off) * ww, 0, ww, h);
+                        brush.Color = down[off] ? LitWhite : (dimmed ? Color.FromArgb(232, 232, 232) : Color.White);
+                        g.FillRectangle(brush, r);
+                        g.DrawRectangle(border, r.X, r.Y, r.Width, r.Height);
+                        string label = Keymap.Keys[off];
+                        if (off % 12 == 0) label = Keymap.NoteName(Keymap.DefaultBase + off) + "\n" + label;
+                        RectangleF tr = new RectangleF(r.X, r.Y, r.Width, r.Height - 3);
+                        g.DrawString(label, Font, text, tr, center);
+                    }
+                    text.Color = Color.FromArgb(220, 220, 220);
+                    for (int off = 0; off < Keymap.KeyCount; off++)
+                    {
+                        if (!IsBlack(off)) continue;
+                        RectangleF r = new RectangleF(WhitesBefore(off) * ww - bw / 2f, 0, bw, bh);
+                        brush.Color = down[off] ? LitBlack : (dimmed ? Color.FromArgb(130, 130, 130) : Color.FromArgb(35, 35, 35));
+                        g.FillRectangle(brush, r);
+                        RectangleF tr = new RectangleF(r.X - 4, r.Y, r.Width + 8, r.Height - 2);
+                        g.DrawString(Keymap.Keys[off], Font, text, tr, center);
+                    }
+                }
+            }
+            finally
+            {
+                center.Dispose();
+            }
         }
     }
 
