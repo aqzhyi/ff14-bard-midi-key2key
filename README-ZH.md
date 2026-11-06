@@ -201,6 +201,8 @@ FF14 的演奏模式一次只能發出一個音，同時按下好幾個鍵時，
 |---|---|
 | `README.md` | 英文說明（English） |
 | `README-ZH.md` | 正體中文說明（本文件） |
+| `CHANGELOG.md` | 各版本的變更紀錄（English） |
+| `CHANGELOG-ZH.md` | 各版本的變更紀錄（正體中文） |
 | `csharp\Key2Key.cs` | 核心程式與主控台版（C# 5） |
 | `csharp\Gui.cs` | 視窗版介面（WinForms，C# 5；和 `Key2Key.cs` 一起編譯） |
 | `csharp\app.manifest` | 主控台版：要求系統管理員權限 |

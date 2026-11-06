@@ -197,6 +197,8 @@ Turn on "chord spread" (window version: tick "和弦錯開" in the main window; 
 |---|---|
 | `README.md` | English README |
 | `README-ZH.md` | Traditional Chinese README (正體中文) |
+| `CHANGELOG.md` | What changed in each version (English) |
+| `CHANGELOG-ZH.md` | What changed in each version (正體中文) |
 | `csharp\Key2Key.cs` | The core and the console version (C# 5) |
 | `csharp\Gui.cs` | The window version (WinForms, C# 5; built together with `Key2Key.cs`) |
 | `csharp\app.manifest` | Console version: asks for administrator rights |
