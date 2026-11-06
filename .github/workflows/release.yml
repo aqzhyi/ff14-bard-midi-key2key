@@ -27,16 +27,18 @@ jobs:
         uses: actions/checkout@v4
 
       # Same script as on a normal PC: it uses the C# compiler that is already in Windows.
-      - name: Build ff14-key2key.exe
+      - name: Build ff14-key2key.exe and ff14-key2key-gui.exe
         shell: cmd
         run: csharp\build.bat nopause
 
-      - name: Make the SHA256 file
+      - name: Make the SHA256 files
         shell: pwsh
         run: |
-          $hash = (Get-FileHash -Algorithm SHA256 csharp\ff14-key2key.exe).Hash.ToLower()
-          [System.IO.File]::WriteAllText("$PWD\csharp\ff14-key2key.exe.sha256", "$hash *ff14-key2key.exe`n")
-          Get-Content csharp\ff14-key2key.exe.sha256
+          foreach ($name in @("ff14-key2key.exe", "ff14-key2key-gui.exe")) {
+            $hash = (Get-FileHash -Algorithm SHA256 "csharp\$name").Hash.ToLower()
+            [System.IO.File]::WriteAllText("$PWD\csharp\$name.sha256", "$hash *$name`n")
+            Get-Content "csharp\$name.sha256"
+          }
 
       - name: Keep the build as an artifact
         if: github.ref_type != 'tag' && inputs.version == ''
@@ -46,6 +48,8 @@ jobs:
           path: |
             csharp/ff14-key2key.exe
             csharp/ff14-key2key.exe.sha256
+            csharp/ff14-key2key-gui.exe
+            csharp/ff14-key2key-gui.exe.sha256
 
       - name: Publish the release
         if: github.ref_type == 'tag' || inputs.version != ''
@@ -60,12 +64,14 @@ jobs:
           esac
           cat > release-notes.md <<'EOF'
           Built by GitHub Actions from the source code of this tag. The build log is public.
-          The file has no digital signature, so Windows may show a warning. The program asks for administrator rights.
-          To check the file, compare the SHA256 of ff14-key2key.exe with the number in ff14-key2key.exe.sha256:
-          certutil -hashfile ff14-key2key.exe SHA256
+          ff14-key2key-gui.exe is the window version (buttons, pause/resume, system tray). ff14-key2key.exe is the console version.
+          The files have no digital signature, so Windows may show a warning. The programs ask for administrator rights.
+          To check a file, compare its SHA256 with the number in the matching .sha256 file, for example:
+          certutil -hashfile ff14-key2key-gui.exe SHA256
 
           由 GitHub Actions 以此標籤的原始碼自動編譯，編譯紀錄公開。
+          ff14-key2key-gui.exe 是視窗版（按鈕操作、暫停／繼續、系統匣背景執行）；ff14-key2key.exe 是主控台版。
           檔案沒有數位簽章，Windows 可能顯示警告；程式會要求系統管理員權限。
-          檢查方式：用 certutil -hashfile ff14-key2key.exe SHA256 算出的值，和 ff14-key2key.exe.sha256 裡的數字比對。
+          檢查方式：用 certutil -hashfile ff14-key2key-gui.exe SHA256 算出的值，和對應的 .sha256 檔裡的數字比對。
           EOF
-          gh release create "$TAG" csharp/ff14-key2key.exe csharp/ff14-key2key.exe.sha256 --target "$GITHUB_SHA" --title "$TAG" --notes-file release-notes.md
+          gh release create "$TAG" csharp/ff14-key2key-gui.exe csharp/ff14-key2key-gui.exe.sha256 csharp/ff14-key2key.exe csharp/ff14-key2key.exe.sha256 --target "$GITHUB_SHA" --title "$TAG" --notes-file release-notes.md

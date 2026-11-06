@@ -1,3 +1,4 @@
 # build output and per-machine settings
 csharp/ff14-key2key.exe
 csharp/config.txt
+csharp/ff14-key2key-gui.exe
