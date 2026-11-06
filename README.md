@@ -80,6 +80,7 @@ The buttons of the **window version** (the words in the program are Chinese):
 | MIDI device (MIDI 裝置) / Refresh (重新整理) | Choose your MIDI keyboard. After you plug a keyboard in or out, click Refresh |
 | Start mapping (▶ 開始映射) / Stop mapping (■ 停止映射) | Start or stop changing MIDI keys into computer keys. Stop also closes the MIDI device, so other programs can use it |
 | Pause (Ⅱ 暫停擷取) / Resume (▶ 繼續擷取) | While mapping, stop sending keys to the game for a while. Held keys are let go at once. Click again to resume at once |
+| Chord spread (和弦錯開) checkbox | Send notes you press together one after another. See "Chord spread" below |
 | Octave follow (自動跟隨八度) checkbox | Follow the OCTAVE and TRANSPOSE buttons of the keyboard. On by default. You can change it while mapping. Untick it if your keyboard does not have 37 keys. See step 4 |
 | Calibrate (校準最低音) | Set again which MIDI note is the far left key |
 | Test scale (測試音階) | The program presses all 37 keys by itself. Use it to check the keys in the game. You do not need a MIDI keyboard |
