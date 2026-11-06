@@ -15,7 +15,10 @@ The tool works with a USB MIDI keyboard that has 37 keys. The author uses a MIDI
 - **One MIDI key is one computer key.** All 37 notes have their own keys. The tool does not use Shift or Ctrl. The full list is in [KEYMAP.md](KEYMAP.md).
 - **It works when the game is not in front.** The key messages go straight to the FF14 window. You can use your browser while you play. Your normal keyboard still works as usual.
 - **The first run helps you set up.** You do not need to know MIDI note numbers.
+- **There is a window version.** You use every function with buttons. One button pauses and resumes. The program can also hide in the system tray and keep running. The console version is still there too.
 - **You do not need to install anything.** It uses the C# compiler that is already in Windows. Double-click `build.bat` to make the program.
+
+![The window version during the test scale. The pressed key lights up on the keyboard picture.](docs/screenshot-gui.png)
 
 ## USAGE
 
@@ -41,24 +44,48 @@ Keep the "high octave" and "low octave" keys (Shift and Ctrl) as the default. Th
 
 ### 2. Get the program
 
-**Easy way: download it.** Open the [Releases page](https://github.com/aqzhyi/ff14-bard-midi-key2key/releases). Download `ff14-key2key.exe`. GitHub builds this file by itself from the source code in this repository. Put it in any folder.
+There are two versions of the program. They do the same things and use the same `config.txt`:
 
-Windows may show a warning ("Windows protected your PC"), because the file has no digital signature. You can check the file: download `ff14-key2key.exe.sha256` from the same page. Then run `certutil -hashfile ff14-key2key.exe SHA256` and compare the result with the number in that file.
+| File | Version |
+|---|---|
+| `ff14-key2key-gui.exe` | **Window version (we suggest this).** Buttons, pause and resume, run in the background |
+| `ff14-key2key.exe` | Console version. You type numbers in a menu |
+
+**Easy way: download it.** Open the [Releases page](https://github.com/aqzhyi/ff14-bard-midi-key2key/releases). Download `ff14-key2key-gui.exe` (or `ff14-key2key.exe`). GitHub builds these files by itself from the source code in this repository. Put the file in any folder.
+
+Windows may show a warning ("Windows protected your PC"), because the files have no digital signature. You can check a file: download its `.sha256` file from the same page (for example `ff14-key2key-gui.exe.sha256`). Then run `certutil -hashfile ff14-key2key-gui.exe SHA256` and compare the result with the number in that file.
 
 **Or build it yourself.**
 
 1. Download this repository (Code, then Download ZIP, then unzip it). Or use `git clone`.
-2. Double-click `csharp\build.bat`. If it works, you see `SUCCESS`. The file `csharp\ff14-key2key.exe` is made.
+2. Double-click `csharp\build.bat`. If it works, you see `SUCCESS`. The files `csharp\ff14-key2key-gui.exe` and `csharp\ff14-key2key.exe` are made.
 
 The build uses the C# compiler (`csc.exe`) of .NET Framework. It is already in Windows. You do not need Visual Studio or an SDK.
 
 ### 3. Start the program
 
 1. Connect your MIDI keyboard. Close other programs that use MIDI, for example a DAW. In Windows, usually only one program can use a MIDI input at one time.
-2. Double-click `ff14-key2key.exe`. Windows may ask "Do you want to allow this app to make changes?". Click "Yes".
+2. Double-click `ff14-key2key-gui.exe` (window version) or `ff14-key2key.exe` (console version). Windows may ask "Do you want to allow this app to make changes?". Click "Yes".
 
    The program always asks for administrator rights. If FF14 runs as administrator, Windows blocks keys from a normal program. It does not show an error.
-3. You see a menu. The words in the program are Chinese:
+
+The buttons of the **window version** (the words in the program are Chinese):
+
+| Button | What it does |
+|---|---|
+| MIDI device (MIDI 裝置) / Refresh (重新整理) | Choose your MIDI keyboard. After you plug a keyboard in or out, click Refresh |
+| Start mapping (▶ 開始映射) / Stop mapping (■ 停止映射) | Start or stop changing MIDI keys into computer keys. Stop also closes the MIDI device, so other programs can use it |
+| Pause (Ⅱ 暫停擷取) / Resume (▶ 繼續擷取) | While mapping, stop sending keys to the game for a while. Held keys are let go at once. Click again to resume at once |
+| Calibrate (校準最低音) | Set again which MIDI note is the far left key |
+| Test scale (測試音階) | The program presses all 37 keys by itself. Use it to check the keys in the game. You do not need a MIDI keyboard |
+| Monitor MIDI (監看 MIDI) | It only shows the notes it gets. It does **not** press any key. Use it to find problems |
+| Key table (鍵位對照表) | Opens a window with the table of 37 keys |
+| Run in background (背景執行) | Hides the window in the system tray (bottom right). Mapping keeps working. Double-click the icon to show the window again. Right-click it to pause, resume or exit |
+| Exit (離開) | Lets go of all keys and closes the program. The ✕ button of the window does the same |
+
+The color of the tray icon shows the state: grey = idle, green = mapping, yellow = paused, blue = calibrating, testing or monitoring. Only one window version can run at a time. If you start it again, the window that is already open comes to the front.
+
+The **console version** shows a menu:
 
    | Option | What it does |
    |---|---|
@@ -72,7 +99,7 @@ The build uses the C# compiler (`csc.exe`) of .NET Framework. It is already in W
 
 ### 4. First time: calibrate
 
-The first time you choose `1`, the program helps you set up. Follow the screen:
+The first time you click "Start mapping" (in the console version: choose `1`), the program helps you set up. Follow the screen:
 
 1. Press the **lowest** key (the far left key) on your keyboard.
 2. Press the **highest** key (the far right key).
@@ -83,17 +110,27 @@ If your keyboard does not have 37 keys: press the key you want to use as the low
 
 ### 5. Play
 
+**Window version**
+
+1. Click "▶ 開始映射" (Start mapping). When "FF14 視窗" shows a green light and "已連線" (connected), the game was found.
+2. In FF14, equip an instrument and start performance mode.
+3. Play. The keys you press light up on the keyboard picture. To keep your desktop tidy, click "背景執行" (Run in background).
+4. To stop sending keys for a while (for example, to do something else on the keyboard), click "Ⅱ 暫停擷取" (Pause). Click it again to resume.
+5. To stop, click "■ 停止映射" (Stop mapping) or "離開" (Exit). The program lets go of all keys by itself.
+
+**Console version**
+
 1. Type `1` in the menu and press Enter. The screen shows "已找到 FF14 視窗" ("FF14 window found").
 2. In FF14, equip an instrument and start performance mode.
 3. Play. Keep the program window open. It does not matter which window is in front.
 4. To stop, press `Ctrl+C` or close the window. The program lets go of all keys by itself.
 
-Tip: do not click the black program window with the mouse while you play.
+Tip: with the console version, do not click the black program window with the mouse while you play.
 
 ### 6. Check (we suggest this)
 
-- Choose `3` (test scale). The program plays from the lowest note to the highest note by itself. If the scale goes up and there are no wrong notes, the keys in the game are the same as the keys in the program.
-- Choose `4` (monitor MIDI). When you press a key, the program shows the note and the computer key. It does not send any key.
+- Test scale (console version: choose `3`). The program plays from the lowest note to the highest note by itself. If the scale goes up and there are no wrong notes, the keys in the game are the same as the keys in the program.
+- Monitor MIDI (console version: choose `4`). When you press a key, the program shows the note and the computer key. It does not send any key.
 
 ## Config file `config.txt`
 
@@ -113,7 +150,9 @@ channel=0      # 0 = all channels
 - **The program says "超出範圍" (out of range) when you press a key.** The Octave or Transpose button on the keyboard was changed. Set it back to the setting you used in the calibration, or calibrate again (option 2). If your keyboard has a "smart scale" function, turn it off.
 - **The test scale is right, but your playing has wrong notes.** Calibrate again.
 - **Zhuyin symbols appear when you press keys.** Change your input method to English mode.
-- **The build fails.** Check that `Key2Key.cs`, `app.manifest` and `build.bat` are all in the `csharp\` folder. Paste the screen in an Issue.
+- **No sound after you click Pause.** This is normal. While paused, no keys go to the game. Click Resume.
+- **You cannot find the program window.** It may be in the system tray. Double-click the piano icon in the notification area (bottom right). Or start `ff14-key2key-gui.exe` again: the window that is already open comes to the front.
+- **The build fails.** Check that `Key2Key.cs`, `Gui.cs`, `app.manifest`, `app.gui.manifest` and `build.bat` are all in the `csharp\` folder. Paste the screen in an Issue. If it says an exe is still running, close it first (also check the system tray).
 
 ## How it works
 
@@ -127,14 +166,17 @@ channel=0      # 0 = all channels
 |---|---|
 | `README.md` | English README |
 | `README-ZH.md` | Traditional Chinese README (正體中文) |
-| `csharp\Key2Key.cs` | The source code (one file, C# 5) |
-| `csharp\app.manifest` | Asks for administrator rights |
-| `csharp\build.bat` | The build script |
-| `.github\workflows\release.yml` | Builds the exe and makes the release on GitHub |
+| `csharp\Key2Key.cs` | The core and the console version (C# 5) |
+| `csharp\Gui.cs` | The window version (WinForms, C# 5; built together with `Key2Key.cs`) |
+| `csharp\app.manifest` | Console version: asks for administrator rights |
+| `csharp\app.gui.manifest` | Window version: asks for administrator rights, supports high DPI |
+| `csharp\build.bat` | The build script (makes both exe files) |
+| `.github\workflows\release.yml` | Builds the exe files and makes the release on GitHub |
 | `KEYMAP.md` | The table of 37 keys |
-| `docs\screenshot.png` | The screenshot in this README |
+| `docs\screenshot.png`, `docs\screenshot-gui.png` | The screenshots in this README |
+| `docs\PRD-GUI.md` | The plan for the window version (Chinese) |
 
-The built file `ff14-key2key.exe` and your calibration file `config.txt` are not in version control (see `.gitignore`).
+The built files `ff14-key2key.exe` and `ff14-key2key-gui.exe` and your calibration file `config.txt` are not in version control (see `.gitignore`).
 
 ## Disclaimer
 
