@@ -816,7 +816,7 @@ namespace Ff14Key2Key
             {
                 m = MidiIn.Open(dev.Index, dev.Name, handler);
             }
-            catch (MidiException ex)
+            catch (Exception ex)   // MidiException, or anything else: the spreader thread and its 1 ms timer must not leak
             {
                 eng.Shutdown();
                 spr.Stop();
