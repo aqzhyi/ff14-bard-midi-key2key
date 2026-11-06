@@ -1020,6 +1020,16 @@ namespace Ff14Key2Key
             }
         }
 
+        // Oldest line, or null when the queue is empty (used by the window version).
+        public string TryTake()
+        {
+            lock (sync)
+            {
+                if (queue.Count > 0) return queue.Dequeue();
+            }
+            return null;
+        }
+
         public void FlushToConsole()
         {
             while (true)
@@ -1941,7 +1951,7 @@ namespace Ff14Key2Key
         }
 
         // One line of monitor / --verbose output, or null for messages we do not show.
-        private static string Describe(MidiMessage m, int baseNote, int channelFilter)
+        internal static string Describe(MidiMessage m, int baseNote, int channelFilter)
         {
             if (m.Kind == MidiKind.NoteOn || m.Kind == MidiKind.NoteOff)
             {
@@ -2127,7 +2137,7 @@ namespace Ff14Key2Key
             return !midi.CheckLost();
         }
 
-        private static string HintText(int note, int baseNote)
+        internal static string HintText(int note, int baseNote)
         {
             return string.Format(
                 "提示：收到音符 {0} ({1})，超出 FF14 的 37 個音（目前有效範圍 MIDI {2} ~ {3}），已忽略。" +
