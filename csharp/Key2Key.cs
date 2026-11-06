@@ -585,7 +585,10 @@ namespace Ff14Key2Key
                 }
                 if (m.Kind == MidiKind.NoteOff)
                 {
-                    if (RemoveLocked(m)) return;   // never reached the game: nothing to release
+                    // A waiting copy never reached the game, so it is dropped. The Note Off still goes to the engine:
+                    // the same note may also have an earlier Note On that did reach the game (a Note On sent twice
+                    // without a Note Off in between), and the engine ignores a Note Off whose key is not down.
+                    RemoveLocked(m);
                     engine.Handle(m);
                     return;
                 }

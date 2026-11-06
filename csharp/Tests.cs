@@ -1150,6 +1150,22 @@ namespace Ff14Key2Key
                 CheckBalanced(ev, true);
                 Assert.True(e.CurrentLow >= 0 && e.CurrentLow <= Engine.MaxLow, "low " + e.CurrentLow);
             });
+            Add("ChordSpreader: repeated note on then note off leaves the key released", delegate
+            {
+                FakeSink s = new FakeSink();
+                Engine e = new Engine(s, Base, 0);
+                ChordSpreader c = new ChordSpreader(e, 50);
+                try
+                {
+                    c.Handle(On(48));
+                    Assert.True(WaitFor(delegate { return s.Count >= 1; }, 2000), "first note never sounded");
+                    c.Handle(On(48));    // queued, due 50 ms after the first
+                    c.Handle(Off(48));
+                    Thread.Sleep(300);
+                    Assert.Seq(L(Down(0), Up(0)), s.Events(), "events");
+                }
+                finally { c.Stop(); }
+            });
         }
 
         // ------------------------------------------------------------------ config follow / Program texts
