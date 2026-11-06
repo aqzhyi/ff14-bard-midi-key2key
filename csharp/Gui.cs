@@ -663,7 +663,8 @@ namespace Ff14Key2Key
             }
             if (!File.Exists(ConfigPath))
             {
-                AddLog("尚未校準，暫時使用預設最低音 MIDI " + Keymap.DefaultBase.ToString() + "。");
+                AddLog("第一次使用：還沒有 config.txt，先來校準最低音。");
+                if (!RunCalibration(dev)) return;
             }
 
             Config cfg = Config.Load(ConfigPath);
@@ -872,8 +873,78 @@ namespace Ff14Key2Key
             UpdateUi();
         }
 
+        // ------------------------------------------------------------------
+        // Calibration
+        // ------------------------------------------------------------------
         private void OnCalibrateClick(object sender, EventArgs e)
         {
+            if (mode != Mode.Idle) return;
+            MidiDeviceInfo dev = SelectedDevice();
+            if (dev == null)
+            {
+                ShowWarning("找不到 MIDI 裝置。請接好 MIDI 鍵盤後按「重新整理」。");
+                return;
+            }
+            RunCalibration(dev);
+        }
+
+        // Modal dialog: lowest key, then highest key; saves base_note (and the device name) to config.txt.
+        // True when a new base note was saved.
+        private bool RunCalibration(MidiDeviceInfo dev)
+        {
+            Config cfg = Config.Load(ConfigPath);
+            mode = Mode.Calibrating;
+            UpdateUi();
+            AddLog("校準最低音：" + dev.Name);
+            int low;
+            string error;
+            DialogResult result;
+            try
+            {
+                using (CalibrationForm f = new CalibrationForm(dev, cfg.Channel, Font, scale, Icon))
+                {
+                    result = f.ShowDialog(this);
+                    low = f.LowNote;
+                    error = f.Error;
+                }
+            }
+            finally
+            {
+                mode = Mode.Idle;
+                if (!exiting) UpdateUi();
+            }
+            if (exiting) return false;
+
+            if (error != null)
+            {
+                AddLog(error);
+                ShowWarning(error);
+                return false;
+            }
+            if (result != DialogResult.OK || low < 0)
+            {
+                AddLog("已取消校準。");
+                return false;
+            }
+
+            cfg.BaseNote = low;
+            cfg.Device = dev.Name;
+            try
+            {
+                cfg.Save(ConfigPath);
+            }
+            catch (Exception ex)
+            {
+                string msg = "無法寫入設定檔：" + ex.Message + "\r\n請把整個資料夾放到可以寫入的位置（例如桌面）再試一次。";
+                AddLog(msg);
+                ShowWarning(msg);
+                return false;
+            }
+            AddLog(string.Format("校準完成，已儲存到 config.txt：最低音 = MIDI {0} ({1})，FF14 的 37 個音對應 MIDI {0} ({1}) ~ {2} ({3})。",
+                low, Keymap.NoteName(low), low + 36, Keymap.NoteName(low + 36)));
+            AddLog("提醒：鍵盤上的 Octave / Transpose 請保持在原本的設定，校準後不要再改。");
+            RefreshConfigText();
+            return true;
         }
 
         private void OnTestClick(object sender, EventArgs e)
@@ -907,7 +978,7 @@ namespace Ff14Key2Key
             runButton.Enabled = (idle && HasDevices) || mapping;
             pauseButton.Text = paused ? "▶ 繼續擷取" : "Ⅱ 暫停擷取";
             pauseButton.Enabled = mapping;
-            calibrateButton.Enabled = false;
+            calibrateButton.Enabled = idle && HasDevices;
             testButton.Enabled = false;
             monitorButton.Enabled = false;
             keymapButton.Enabled = false;
@@ -982,6 +1053,224 @@ namespace Ff14Key2Key
                 logBox.Text = (cut >= 0) ? all.Substring(cut + 1) : "";
             }
             logBox.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + text + "\r\n");
+        }
+    }
+
+    // ======================================================================
+    // Calibration dialog: lowest key, then highest key (the console version's DoCalibrate, as a window).
+    // Opens the MIDI device itself and closes it when the dialog closes.
+    // DialogResult: OK = LowNote is set; Cancel = cancelled; Abort = Error is set.
+    // ======================================================================
+    internal sealed class CalibrationForm : Form
+    {
+        private const int HintAfterMs = 20000;
+
+        private readonly MidiDeviceInfo device;
+        private readonly NoteCatcher catcher;
+        private readonly Timer timer = new Timer();
+        private readonly float scale;
+        private MidiIn midi;
+        private Label stepText;
+        private Label detailText;
+        private Label hintText;
+        private int step;
+        private int low = -1;
+        private int waited;
+        private int lowNote = -1;
+        private string error;
+
+        public CalibrationForm(MidiDeviceInfo device, int channel, Font font, float scale, Icon icon)
+        {
+            this.device = device;
+            this.scale = scale;
+            catcher = new NoteCatcher(channel);
+
+            Text = "校準最低音";
+            Font = font;
+            Icon = icon;
+            AutoScaleMode = AutoScaleMode.None;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent;
+            ClientSize = new Size(Sc(520), Sc(260));
+
+            TableLayoutPanel root = new TableLayoutPanel();
+            root.Dock = DockStyle.Fill;
+            root.Padding = new Padding(Sc(16));
+            root.ColumnCount = 1;
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            int textWidth = Sc(480);
+
+            stepText = new Label();
+            stepText.AutoSize = true;
+            stepText.MaximumSize = new Size(textWidth, 0);
+            stepText.Font = new Font(font.FontFamily, font.Size * 1.25f, FontStyle.Bold);
+            stepText.Margin = new Padding(0, 0, 0, Sc(10));
+
+            detailText = new Label();
+            detailText.AutoSize = true;
+            detailText.MaximumSize = new Size(textWidth, 0);
+            detailText.Margin = new Padding(0, 0, 0, Sc(8));
+
+            Label note = new Label();
+            note.AutoSize = true;
+            note.MaximumSize = new Size(textWidth, 0);
+            note.ForeColor = SystemColors.GrayText;
+            note.Text = "鍵盤不是 37 鍵時：第 1 步請按「要當作 FF14 最低音 C」的琴鍵，第 2 步按從它往上數第 36 個半音的琴鍵（高三個八度的 C）。";
+
+            hintText = new Label();
+            hintText.AutoSize = true;
+            hintText.MaximumSize = new Size(textWidth, 0);
+            hintText.ForeColor = Color.FromArgb(214, 140, 0);
+            hintText.Margin = new Padding(0, Sc(8), 0, 0);
+
+            Button cancel = new Button();
+            cancel.Text = "取消";
+            cancel.AutoSize = true;
+            cancel.MinimumSize = new Size(Sc(100), Sc(32));
+            cancel.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+            cancel.DialogResult = DialogResult.Cancel;
+            CancelButton = cancel;
+
+            root.RowCount = 5;
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.Controls.Add(stepText, 0, 0);
+            root.Controls.Add(detailText, 0, 1);
+            root.Controls.Add(note, 0, 2);
+            root.Controls.Add(hintText, 0, 3);
+            root.Controls.Add(cancel, 0, 4);
+            Controls.Add(root);
+
+            timer.Interval = 50;
+            timer.Tick += OnTick;
+            Shown += OnShown;
+            FormClosed += OnClosed;
+        }
+
+        public int LowNote
+        {
+            get { return lowNote; }
+        }
+
+        public string Error
+        {
+            get { return error; }
+        }
+
+        private int Sc(int pixels)
+        {
+            return (int)Math.Round(pixels * scale);
+        }
+
+        private void OnShown(object sender, EventArgs e)
+        {
+            try
+            {
+                midi = MidiIn.Open(device.Index, device.Name, catcher.Handle);
+            }
+            catch (MidiException ex)
+            {
+                Fail(ex.Message);
+                return;
+            }
+            ShowStep();
+            timer.Start();
+        }
+
+        private void ShowStep()
+        {
+            waited = 0;
+            hintText.Text = "";
+            if (step == 0)
+            {
+                stepText.Text = "第 1 步：請按下鍵盤『最左邊（最低音）』的琴鍵";
+                detailText.Text = "使用裝置：" + device.Name;
+            }
+            else
+            {
+                stepText.Text = "第 2 步：請再按下『最右邊（最高音）』的琴鍵";
+                detailText.Text = string.Format("已收到最低音：MIDI {0} ({1})", low, Keymap.NoteName(low));
+            }
+        }
+
+        private void OnTick(object sender, EventArgs e)
+        {
+            int n = catcher.TryTake();
+            if (n >= 0)
+            {
+                OnNote(n);
+                return;
+            }
+            if (midi.CheckLost())
+            {
+                Fail("MIDI 裝置中斷了（可能被拔掉或被其他程式搶走），校準沒有完成。");
+                return;
+            }
+            waited += timer.Interval;
+            if (waited >= HintAfterMs && hintText.Text.Length == 0)
+            {
+                hintText.Text = "還沒收到琴鍵訊號：請確認有按下琴鍵、USB 有接好，沒有被其他程式佔用；" +
+                    "如果 config.txt 的 channel 不是 0，也請改成 0。";
+            }
+        }
+
+        private void OnNote(int note)
+        {
+            if (step == 0)
+            {
+                low = note;
+                step = 1;
+                catcher.Clear();
+                ShowStep();
+                return;
+            }
+
+            int high = note;
+            if (high - low != Keymap.KeyCount - 1)
+            {
+                timer.Stop();
+                DialogResult answer = MessageBox.Show(this, string.Format(
+                    "最高音 MIDI {0} ({1}) 與最低音 MIDI {2} ({3}) 相差 {4} 個半音，不是 36。\r\n\r\n" +
+                    "可能原因：鍵盤不是 37 鍵、按錯琴鍵，或兩次按鍵之間改了 Octave / Transpose。\r\n\r\n" +
+                    "按「是」= 仍然儲存；按「否」= 重新校準。",
+                    high, Keymap.NoteName(high), low, Keymap.NoteName(low), high - low),
+                    Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (answer != DialogResult.Yes)
+                {
+                    step = 0;
+                    low = -1;
+                    catcher.Clear();
+                    ShowStep();
+                    timer.Start();
+                    return;
+                }
+            }
+            timer.Stop();
+            lowNote = low;
+            DialogResult = DialogResult.OK;   // closes the dialog
+        }
+
+        private void Fail(string message)
+        {
+            timer.Stop();
+            error = message;
+            DialogResult = DialogResult.Abort;
+        }
+
+        private void OnClosed(object sender, FormClosedEventArgs e)
+        {
+            timer.Stop();
+            if (midi != null)
+            {
+                midi.Close();
+                midi = null;
+            }
         }
     }
 }
