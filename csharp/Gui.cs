@@ -114,6 +114,11 @@ namespace Ff14Key2Key
         private Mode mode = Mode.Idle;
         private Engine engine;          // mapping
         private MidiIn midi;            // mapping
+        private Thread testThread;      // test
+        private Engine testEngine;      // test
+        private ManualResetEvent testStop;
+        private volatile bool testDone;
+        private volatile string testResult;
         private bool linked;
         private bool filling;
         private bool exiting;
@@ -235,6 +240,7 @@ namespace Ff14Key2Key
         private void StopEverything()
         {
             StopMapping(null);
+            AbortTest();
         }
 
         public void RecoverFromError(Exception ex)
@@ -438,6 +444,7 @@ namespace Ff14Key2Key
             bool nowLinked = sink.Poll();   // cheap while the window is known; searches at most every 500 ms otherwise
             if (nowLinked != linked) SetLinked(nowLinked, false);
             if (mode == Mode.Mapping) TickMapping();
+            if (mode == Mode.Testing && testDone) FinishTest();
         }
 
         private void DrainPending()
@@ -947,8 +954,141 @@ namespace Ff14Key2Key
             return true;
         }
 
+        // ------------------------------------------------------------------
+        // Test scale: presses the 37 keys in turn (no MIDI keyboard needed), on a worker thread.
+        // ------------------------------------------------------------------
+        private const int TestDelayMs = 250;
+
         private void OnTestClick(object sender, EventArgs e)
         {
+            if (mode == Mode.Testing)
+            {
+                if (testStop != null) testStop.Set();   // the worker releases its key and ends; the timer finishes up
+            }
+            else if (mode == Mode.Idle)
+            {
+                StartTest();
+            }
+        }
+
+        private void StartTest()
+        {
+            if (!sink.Poll())
+            {
+                AddLog("找不到 FF14 視窗，無法測試音階。");
+                LogSimilarWindows();
+                ShowWarning("找不到 FF14 視窗。\r\n請先開啟遊戲，裝備樂器並進入演奏模式，再按「測試音階」。");
+                return;
+            }
+            Engine eng = new Engine(sink, Keymap.DefaultBase, 0);
+            ManualResetEvent stop = new ManualResetEvent(false);
+            testEngine = eng;
+            testStop = stop;
+            testDone = false;
+            testResult = null;
+            liveEngine = eng;
+            mode = Mode.Testing;
+            AddLog("測試音階：程式會依序按下 37 個音的電腦按鍵（不需要 MIDI 鍵盤）。");
+            AddLog("  按鍵會直接送到 FF14 視窗；請先讓 FF14 裝備樂器並進入演奏模式。按「停止測試」可隨時停止。");
+            testThread = new Thread(delegate() { RunTest(eng, stop); });
+            testThread.IsBackground = true;
+            testThread.Name = "test scale";
+            testThread.Start();
+            UpdateUi();
+        }
+
+        // Worker thread: never touches the UI (log lines go through the pending queue).
+        private void RunTest(Engine eng, ManualResetEvent stop)
+        {
+            string result = "cancel";
+            try
+            {
+                int before = sink.Undelivered;
+                for (int s = 3; s >= 1; s--)
+                {
+                    pending.Add("  " + s.ToString() + " ...");
+                    if (stop.WaitOne(1000)) return;
+                }
+                int hold = TestDelayMs * 6 / 10;
+                int rest = TestDelayMs - hold;
+                for (int off = 0; off < Keymap.KeyCount; off++)
+                {
+                    pending.Add(string.Format("  偏移 {0,2}  {1,-3}  按鍵 {2}", off, Keymap.NoteName(Keymap.DefaultBase + off), Keymap.Keys[off]));
+                    eng.PressOffset(off);
+                    bool cancelled = stop.WaitOne(hold);
+                    eng.ReleaseOffset(off);
+                    if (cancelled || stop.WaitOne(rest)) return;
+                }
+                pending.Add(string.Format("  C 大調和弦（按鍵 {0} {1} {2} 同時按）", Keymap.Keys[12], Keymap.Keys[16], Keymap.Keys[19]));
+                eng.PressOffset(12);
+                eng.PressOffset(16);
+                eng.PressOffset(19);
+                bool stopChord = stop.WaitOne(800);
+                eng.ReleaseAll();
+                if (stopChord) return;
+                result = (sink.Undelivered > before) ? "undelivered" : "ok";
+            }
+            catch (Exception ex)
+            {
+                result = "error:" + ex.Message;
+            }
+            finally
+            {
+                eng.Shutdown();
+                testResult = result;
+                testDone = true;
+            }
+        }
+
+        // UI thread, once the worker has ended.
+        private void FinishTest()
+        {
+            Thread t = testThread;
+            if (t != null) t.Join(1000);
+            CleanupTest();
+            string r = testResult ?? "cancel";
+            if (r == "ok")
+            {
+                AddLog("測試完成，所有按鍵都已放開。音階由低到高、沒有跳音，就代表遊戲鍵位和程式一致。");
+            }
+            else if (r == "undelivered")
+            {
+                AddLog("警告：測試途中有按鍵沒有送出去（FF14 視窗不見了，或遊戲沒有收下訊息）。");
+            }
+            else if (r.StartsWith("error:", StringComparison.Ordinal))
+            {
+                AddLog("測試時發生錯誤：" + r.Substring(6) + "（所有按鍵都已放開）");
+            }
+            else
+            {
+                AddLog("已停止測試，所有按鍵都已放開。");
+            }
+            UpdateUi();
+        }
+
+        // Exit / error path: stop the worker now and make sure no key stays down.
+        private void AbortTest()
+        {
+            if (testEngine == null) return;
+            if (testStop != null) testStop.Set();
+            testEngine.Shutdown();
+            Thread t = testThread;
+            if (t != null) t.Join(1000);
+            CleanupTest();
+        }
+
+        private void CleanupTest()
+        {
+            if (testEngine != null && liveEngine == testEngine) liveEngine = null;
+            testEngine = null;
+            testThread = null;
+            if (testStop != null)
+            {
+                testStop.Close();
+                testStop = null;
+            }
+            testDone = false;
+            if (mode == Mode.Testing) mode = Mode.Idle;
         }
 
         private void OnMonitorClick(object sender, EventArgs e)
@@ -979,7 +1119,8 @@ namespace Ff14Key2Key
             pauseButton.Text = paused ? "▶ 繼續擷取" : "Ⅱ 暫停擷取";
             pauseButton.Enabled = mapping;
             calibrateButton.Enabled = idle && HasDevices;
-            testButton.Enabled = false;
+            testButton.Text = (mode == Mode.Testing) ? "■ 停止測試" : "測試音階";
+            testButton.Enabled = idle || mode == Mode.Testing;
             monitorButton.Enabled = false;
             keymapButton.Enabled = false;
             backgroundButton.Enabled = mode != Mode.Calibrating;
