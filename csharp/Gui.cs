@@ -68,7 +68,12 @@ namespace Ff14Key2Key
         private readonly Timer timer = new Timer();
         private readonly float scale;
 
+        // The engine that can press keys right now (mapping or test), for the emergency exit paths.
+        private static volatile Engine liveEngine;
+
         private Mode mode = Mode.Idle;
+        private Engine engine;          // mapping
+        private MidiIn midi;            // mapping
         private bool linked;
         private bool filling;
         private List<MidiDeviceInfo> devices = new List<MidiDeviceInfo>();
@@ -108,6 +113,13 @@ namespace Ff14Key2Key
             timer.Interval = 50;
             timer.Tick += OnTick;
             Load += OnFormLoad;
+            FormClosing += OnFormClosing;
+        }
+
+        private void OnFormClosing(object sender, FormClosingEventArgs e)
+        {
+            timer.Stop();
+            StopMapping(null);
         }
 
         // ------------------------------------------------------------------
@@ -293,6 +305,7 @@ namespace Ff14Key2Key
             DrainPending();
             bool nowLinked = sink.Poll();   // cheap while the window is known; searches at most every 500 ms otherwise
             if (nowLinked != linked) SetLinked(nowLinked, false);
+            if (mode == Mode.Mapping) TickMapping();
         }
 
         private void DrainPending()
@@ -494,11 +507,111 @@ namespace Ff14Key2Key
         }
 
         // ------------------------------------------------------------------
-        // Buttons (filled in feature by feature)
+        // Mapping (run)
         // ------------------------------------------------------------------
         private void OnRunClick(object sender, EventArgs e)
         {
+            if (mode == Mode.Mapping)
+            {
+                StopMapping("已停止映射，所有按鍵都已放開。");
+            }
+            else if (mode == Mode.Idle)
+            {
+                StartMapping();
+            }
         }
+
+        private void StartMapping()
+        {
+            MidiDeviceInfo dev = SelectedDevice();
+            if (dev == null)
+            {
+                ShowWarning("找不到 MIDI 裝置。請接好 MIDI 鍵盤後按「重新整理」。");
+                return;
+            }
+            if (!File.Exists(ConfigPath))
+            {
+                AddLog("尚未校準，暫時使用預設最低音 MIDI " + Keymap.DefaultBase.ToString() + "。");
+            }
+
+            Config cfg = Config.Load(ConfigPath);
+            int baseNote = cfg.BaseNote;
+            int channel = cfg.Channel;
+            Engine eng = new Engine(sink, baseNote, channel);
+            // Runs on the MIDI thread: only the engine here, never the UI.
+            MidiShortHandler handler = delegate(uint raw)
+            {
+                eng.Handle(MidiMessage.Parse(raw));
+            };
+            MidiIn m;
+            try
+            {
+                m = MidiIn.Open(dev.Index, dev.Name, handler);
+            }
+            catch (MidiException ex)
+            {
+                eng.Shutdown();
+                AddLog(ex.Message);
+                ShowWarning(ex.Message);
+                return;
+            }
+
+            engine = eng;
+            midi = m;
+            liveEngine = eng;
+            mode = Mode.Mapping;
+            AddLog("開始映射：" + dev.Name);
+            AddLog(string.Format("  最低音 MIDI {0} ({1})，頻道：{2}，有效音域 MIDI {0} ({1}) ~ {3} ({4})",
+                baseNote, Keymap.NoteName(baseNote), ChannelText(channel), baseNote + 36, Keymap.NoteName(baseNote + 36)));
+            AddLog("  按鍵會直接送到 FF14 視窗，不管目前是哪個視窗在前景。請讓 FF14 進入演奏模式（視窗不要最小化）。");
+            if (!linked)
+            {
+                AddLog("  目前找不到 FF14 視窗，開啟遊戲後會自動接上。");
+                LogSimilarWindows();
+            }
+            UpdateUi();
+        }
+
+        // Releases every key, closes the device, back to Idle. message == null: log nothing.
+        private void StopMapping(string message)
+        {
+            Engine e = engine;
+            MidiIn m = midi;
+            engine = null;
+            midi = null;
+            if (liveEngine == e) liveEngine = null;
+            if (e != null) e.Shutdown();   // free every key first
+            if (m != null) m.Close();
+            if (mode == Mode.Mapping) mode = Mode.Idle;
+            if (message != null) AddLog(message);
+            UpdateUi();
+        }
+
+        private void TickMapping()
+        {
+            int[] hints = engine.DrainHints();
+            for (int i = 0; i < hints.Length; i++)
+            {
+                AddLog(Program.HintText(hints[i], engine.BaseNote));
+            }
+            string err = midi.TakeCallbackError();
+            if (err != null) AddLog("警告：處理 MIDI 訊息時發生錯誤：" + err);
+            if (midi.CheckLost())
+            {
+                StopMapping("MIDI 裝置中斷了（可能被拔掉或被其他程式搶走）。所有按鍵都已放開。");
+                ShowWarning("MIDI 裝置中斷了（可能被拔掉或被其他程式搶走）。所有按鍵都已放開。\r\n\r\n" +
+                    "請重新插好鍵盤，按「重新整理」後再開始映射。");
+            }
+        }
+
+        private void ShowWarning(string text)
+        {
+            MessageBox.Show(this, text, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        // ------------------------------------------------------------------
+        // Buttons (filled in feature by feature)
+        // ------------------------------------------------------------------
 
         private void OnPauseClick(object sender, EventArgs e)
         {
@@ -539,9 +652,11 @@ namespace Ff14Key2Key
         private void UpdateUi()
         {
             bool idle = mode == Mode.Idle;
+            bool mapping = mode == Mode.Mapping;
             deviceBox.Enabled = idle && HasDevices;
             refreshButton.Enabled = idle;
-            runButton.Enabled = false;
+            runButton.Text = mapping ? "■ 停止映射" : "▶ 開始映射";
+            runButton.Enabled = (idle && HasDevices) || mapping;
             pauseButton.Enabled = false;
             calibrateButton.Enabled = false;
             testButton.Enabled = false;
@@ -550,8 +665,16 @@ namespace Ff14Key2Key
             backgroundButton.Enabled = false;
             exitButton.Enabled = false;
 
-            statusText.Text = "狀態：閒置";
-            statusText.ForeColor = ColorIdle;
+            if (mapping)
+            {
+                statusText.Text = "狀態：映射中";
+                statusText.ForeColor = ColorRun;
+            }
+            else
+            {
+                statusText.Text = "狀態：閒置";
+                statusText.ForeColor = ColorIdle;
+            }
         }
 
         // ------------------------------------------------------------------
